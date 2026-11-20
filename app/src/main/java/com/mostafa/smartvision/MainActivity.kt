@@ -58,7 +58,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         addButton(content, "قراءة آخر نتيجة صوتيًا") { val s = output.text.toString(); if (s.isNotBlank()) tts?.speak(s, TextToSpeech.QUEUE_FLUSH, null, "result") }
         addButton(content, "مسح الصورة المختارة") { selectedImage = null; announce("تم مسح الصورة المختارة") }
         addLabel(content, "النتيجة")
-        output = TextView(this).apply { text = "أهلًا بك. احفظ مفتاح API، ثم اكتب سؤالك أو اختر صورة."; textSize = 18f; textIsSelectable = true; setPadding(12, 16, 12, 24); contentDescription = text }
+        output = TextView(this).apply { text = "أهلًا بك. احفظ مفتاح API، ثم اكتب سؤالك أو اختر صورة."; textSize = 18f; setTextIsSelectable(true); setPadding(12, 16, 12, 24); contentDescription = text }
         content.addView(output)
         addButton(root, "حفظ الإعدادات") { prefs.edit().putInt("provider", provider.selectedItemPosition).putString("key", apiKey.text.toString().trim()).apply(); announce("تم حفظ الإعدادات على الجهاز") }
         provider.setOnItemSelectedListener(object: AdapterView.OnItemSelectedListener {
