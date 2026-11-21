@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.widget.TextView
+import java.io.File
 import kotlin.concurrent.thread
 
 class WorkActivity : Activity() {
@@ -20,6 +21,7 @@ class WorkActivity : Activity() {
     private var camUri: Uri? = null
     private val reqCam = 31
     private val reqGal = 32
+    private val reqCamIn = 33
 
     private fun titleOf(m: String): String {
         val t = Prompts.TITLES[m]
@@ -100,7 +102,16 @@ class WorkActivity : Activity() {
         }
     }
 
+    // الكاميرا الداخلية للتطبيق (مع الفلاش). لو تعذرت نرجع لكاميرا النظام
     private fun launchCamera() {
+        try {
+            startActivityForResult(Intent(this, CameraActivity::class.java), reqCamIn)
+        } catch (e: Exception) {
+            launchSystemCamera()
+        }
+    }
+
+    private fun launchSystemCamera() {
         val i = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
         camUri = null
         if (Build.VERSION.SDK_INT >= 29) {
@@ -128,6 +139,18 @@ class WorkActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == reqCamIn) {
+            if (resultCode == RESULT_OK) {
+                val path = data?.getStringExtra("path")
+                if (path != null) analyze(listOf(Uri.fromFile(File(path))), null) else finish()
+            } else if (resultCode == RESULT_FIRST_USER) {
+                Ui.toast(this, (data?.getStringExtra("reason") ?: "تعذر تشغيل الكاميرا الداخلية") + ". سأفتح كاميرا النظام")
+                launchSystemCamera()
+            } else {
+                finish()
+            }
+            return
+        }
         if (resultCode != RESULT_OK) {
             finish()
             return

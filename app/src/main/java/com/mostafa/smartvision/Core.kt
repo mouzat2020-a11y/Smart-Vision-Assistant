@@ -10,6 +10,9 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.KeyStore
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -64,7 +67,7 @@ object Crypto {
 
 // ================== الإعدادات ==================
 object Store {
-    val PROVIDERS = listOf("gemini", "groq", "openrouter")
+    val PROVIDERS = listOf("gemini", "groq")
     private var holder: SharedPreferences? = null
 
     private fun prefs(): SharedPreferences {
@@ -270,7 +273,7 @@ object Http {
             val conn = URL(url).openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.doOutput = true
-            conn.connectTimeout = 30000
+            conn.connectTimeout = 10000
             conn.readTimeout = readMs
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             for ((k, v) in headers) conn.setRequestProperty(k, v)
@@ -288,6 +291,8 @@ object Http {
 // ================== المحادثة والرد ==================
 class Msg(val role: String, val text: String, val images: List<String> = emptyList())
 class AiResult(val text: String?, val error: String?)
+// kind: 0 نجاح، 1 جرّب النموذج التالي، 2 خطأ نهائي (مثل مفتاح خاطئ)
+class Verdict(val kind: Int, val text: String)
 
 object Ai {
     // سلسلة النماذج التلقائية في Gemini (نفس ترتيب main.lua)
@@ -352,6 +357,61 @@ object Ai {
             if (firstErr == null) firstErr = r.error
         }
         return AiResult(null, firstErr ?: "فشل الاتصال")
+    }
+
+    // اختبار مزود واحد بعينه (بدون التبديل لمزود آخر)
+    fun askProvider(p: String, history: List<Msg>, cancel: () -> Boolean, progress: (String) -> Unit): AiResult {
+        val h = withRule(history)
+        val r = if (p == "gemini") callGemini(h, cancel, progress) else callOpenAi(p, h, cancel, progress)
+        val t = r.text
+        if (t != null) return AiResult(PlainText.clean(t), null)
+        return r
+    }
+
+    // يجرّب النماذج بالترتيب. عند الفشل ينتقل للتالي فورًا، ولو تأخر النموذج الحالي
+    // أكثر من hedgeMs يبدأ التالي بالتوازي (بحد أقصى محاولتين معًا) ويأخذ أول رد ناجح.
+    private fun hedged(
+        models: List<String>,
+        hedgeMs: Long,
+        cancel: () -> Boolean,
+        progress: (String) -> Unit,
+        send: (String) -> HttpResult,
+        judge: (String, HttpResult) -> Verdict
+    ): AiResult {
+        if (models.isEmpty()) return AiResult(null, "لا توجد نماذج متاحة")
+        val q = LinkedBlockingQueue<Pair<String, HttpResult>>()
+        var started = 0
+        var inFlight = 0
+        var lastStart = System.currentTimeMillis()
+        var lastErr = "فشل الاتصال"
+
+        fun startNext(parallel: Boolean) {
+            val m = models[started]
+            started++
+            inFlight++
+            lastStart = System.currentTimeMillis()
+            if (started == 1) progress("أجرّب النموذج " + m)
+            else if (parallel) progress("النموذج بطيء، أجرّب " + m + " بالتوازي")
+            else progress("النموذج السابق لم ينجح، أجرّب " + m)
+            thread { q.put(Pair(m, send(m))) }
+        }
+
+        startNext(false)
+        while (inFlight > 0) {
+            if (cancel()) return AiResult(null, "تم الإيقاف")
+            val item = q.poll(300, TimeUnit.MILLISECONDS)
+            if (item == null) {
+                if (inFlight < 2 && started < models.size && System.currentTimeMillis() - lastStart >= hedgeMs) startNext(true)
+                continue
+            }
+            inFlight--
+            val v = judge(item.first, item.second)
+            if (v.kind == 0) return AiResult(v.text, null)
+            if (v.kind == 2) return AiResult(null, v.text)
+            lastErr = v.text
+            if (inFlight < 2 && started < models.size) startNext(false)
+        }
+        return AiResult(null, lastErr)
     }
 
     // ---------- Gemini ----------
@@ -439,34 +499,35 @@ object Ai {
         order.addAll(fresh)
         order.addAll(stale)
         val body = JSONObject().put("contents", geminiContents(h)).toString()
-        var lastErr = "فشل الاتصال"
-        for (i in order.indices) {
-            if (cancel()) return AiResult(null, "تم الإيقاف")
-            val m = order[i]
-            if (i == 0) progress("أجرّب النموذج " + m)
-            else progress("النموذج السابق لم ينجح، أجرّب " + m + " (" + (i + 1) + " من " + order.size + ")")
-            val r = Http.post(
-                "https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent",
-                body, mapOf("x-goog-api-key" to key), 120000
-            )
-            if (r.code == 200) {
-                val t = extractGemini(r.body)
-                if (t.isNotEmpty()) {
-                    bad.remove(m)
-                    Store.setGood(m)
+        var hasImg = false
+        for (m in h) if (m.images.isNotEmpty()) hasImg = true
+        val hedgeMs = if (hasImg) 12000L else 8000L
+        return hedged(order, hedgeMs, cancel, progress,
+            { m ->
+                Http.post(
+                    "https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent",
+                    body, mapOf("x-goog-api-key" to key), 90000
+                )
+            },
+            { m, r ->
+                if (r.code == 200) {
+                    val t = extractGemini(r.body)
+                    if (t.isNotEmpty()) {
+                        bad.remove(m)
+                        Store.setGood(m)
+                        Store.saveBad(bad)
+                        Verdict(0, t)
+                    } else {
+                        Verdict(1, "النموذج أرجع ردًا فارغًا (ربما حُجبت الصورة لأسباب الأمان).")
+                    }
+                } else if (r.code == 401 || (r.code == 400 && errMessage(r.body).contains("API key", true))) {
+                    Verdict(2, geminiFriendly(r.code, r.body))
+                } else {
+                    bad[m] = now + (if (r.code == 404) 21600L else 600L)
                     Store.saveBad(bad)
-                    return AiResult(t, null)
+                    Verdict(1, geminiFriendly(r.code, r.body))
                 }
-                lastErr = "النموذج أرجع ردًا فارغًا (ربما حُجبت الصورة لأسباب الأمان)."
-            } else if (r.code == 401 || (r.code == 400 && errMessage(r.body).contains("API key", true))) {
-                return AiResult(null, geminiFriendly(r.code, r.body))
-            } else {
-                lastErr = geminiFriendly(r.code, r.body)
-                bad[m] = now + (if (r.code == 404) 21600L else 600L)
-                Store.saveBad(bad)
-            }
-        }
-        return AiResult(null, lastErr)
+            })
     }
 
     // ---------- Groq / OpenRouter ----------
@@ -560,23 +621,22 @@ object Ai {
             headers["HTTP-Referer"] = "https://github.com/mouzat2020-a11y/Smart-Vision-Assistant"
             headers["X-Title"] = "Smart Vision Assistant"
         }
-        var lastErr = "فشل الاتصال"
-        for (i in list.indices) {
-            if (cancel()) return AiResult(null, "تم الإيقاف")
-            progress("أجرّب النموذج " + list[i] + " (" + Store.pname(p) + ")")
-            val body = JSONObject().put("model", list[i]).put("messages", msgs).toString()
-            val r = Http.post(url, body, headers, if (hasImg) 90000 else 45000)
-            if (r.code == 200) {
-                val t = extractOpenAi(r.body)
-                if (t.isNotEmpty()) return AiResult(t, null)
-                lastErr = "النموذج أرجع ردًا فارغًا."
-            } else if (r.code == 401 || r.code == 402 || r.code == 403 ||
-                (r.code == 400 && errMessage(r.body).contains("api key", true))) {
-                return AiResult(null, openAiFriendly(p, r.code, r.body))
-            } else {
-                lastErr = openAiFriendly(p, r.code, r.body)
-            }
-        }
-        return AiResult(null, lastErr)
+        val hedgeMs = if (hasImg) 12000L else 8000L
+        return hedged(list, hedgeMs, cancel, progress,
+            { m ->
+                val body = JSONObject().put("model", m).put("messages", msgs).toString()
+                Http.post(url, body, headers, if (hasImg) 75000 else 45000)
+            },
+            { _, r ->
+                if (r.code == 200) {
+                    val t = extractOpenAi(r.body)
+                    if (t.isNotEmpty()) Verdict(0, t) else Verdict(1, "النموذج أرجع ردًا فارغًا.")
+                } else if (r.code == 401 || r.code == 402 || r.code == 403 ||
+                    (r.code == 400 && errMessage(r.body).contains("api key", true))) {
+                    Verdict(2, openAiFriendly(p, r.code, r.body))
+                } else {
+                    Verdict(1, openAiFriendly(p, r.code, r.body))
+                }
+            })
     }
 }

@@ -43,7 +43,7 @@ class MainActivity : Activity() {
         build()
         handleShare(intent)
         if (savedInstanceState == null && !Store.hasAny()) {
-            Ui.message(this, "مرحبًا بك", "لتبدأ، افتح الإعدادات وأضف مفتاح API لمزود واحد على الأقل: Gemini أو Groq أو OpenRouter. المفاتيح تُحفظ مشفّرة على جهازك.")
+            Ui.message(this, "مرحبًا بك", "لتبدأ، افتح الإعدادات وأضف مفتاح API لمزود واحد على الأقل: Gemini أو Groq. المفاتيح تُحفظ مشفّرة على جهازك.")
         }
     }
 
