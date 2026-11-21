@@ -1,322 +1,163 @@
 package com.mostafa.smartvision
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
-import android.content.SharedPreferences
-import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
-import android.provider.MediaStore
-import android.speech.tts.TextToSpeech
-import android.util.Base64
-import android.view.Gravity
 import android.view.View
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import android.widget.Button
-import android.widget.CheckBox
-import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.Spinner
-import android.widget.TextView
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.ByteArrayOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.Locale
-import kotlin.concurrent.thread
 
-class MainActivity : Activity(), TextToSpeech.OnInitListener {
-    private lateinit var output: TextView
-    private lateinit var prompt: EditText
-    private lateinit var apiKey: EditText
-    private lateinit var modelName: EditText
-    private lateinit var provider: Spinner
-    private lateinit var autoSpeak: CheckBox
-    private lateinit var prefs: SharedPreferences
-    private var tts: TextToSpeech? = null
-    private var selectedImage: Bitmap? = null
-    private var currentProvider = 0
-    private val pickImage = 21
-    private val takePhoto = 22
-    private val providerNames = listOf("Gemini", "OpenRouter", "Groq")
-    private val defaultModels = listOf("gemini-3.8-flash", "openrouter/auto", "qwen/qwen3.8-27b")
-    private val modelChoices = listOf(
-        listOf("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"),
-        listOf("openrouter/auto"),
-        listOf("qwen/qwen3.8-27b", "qwen/qwen3.6-27b")
+class MainActivity : Activity() {
+    private lateinit var page: Page
+    private val tabButtons = ArrayList<Button>()
+    private val tabNames = listOf("الصور", "المساعدات والكتابة", "الصوت")
+
+    private val imageTools = listOf(
+        Pair("currency", "التعرف على العملات الورقية"),
+        Pair("ocr", "قراءة النصوص من صورة (OCR)"),
+        Pair("color", "التعرف على الألوان"),
+        Pair("objects", "التعرف على الأشياء والمنتجات"),
+        Pair("captcha", "قراءة الكابتشا (صورة التحقق)"),
+        Pair("people", "وصف الأشخاص في الصورة"),
+        Pair("nature", "التعرف على النباتات والحيوانات والفواكه"),
+        Pair("subtitle", "قراءة الترجمة الظاهرة على فيديو مصوّر"),
+        Pair("translate", "ترجمة النص الموجود داخل صورة")
+    )
+
+    private val dailyTools = listOf(
+        Pair("find", "ابحث عن شيء في المكان"),
+        Pair("medicine", "اقرأ عبوة دواء أو منتج صحي"),
+        Pair("document", "اقرأ مستندًا أو فاتورة أو خطابًا"),
+        Pair("signs", "اقرأ اللافتات وأرقام الغرف والأبواب"),
+        Pair("clothing", "تعرّف على الملابس والألوان واقترح تنسيقًا"),
+        Pair("shopping", "اقرأ أسعار المنتجات وقارن الظاهر"),
+        Pair("appliance", "تعرّف على الأجهزة ولوحات الأزرار"),
+        Pair("seating", "ابحث عن الكراسي والمقاعد")
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        initTts(prefs.getString("engine", null))
-        currentProvider = prefs.getInt("provider", 0).coerceIn(0, 2)
+        Store.init(this)
+        Speaker.init(this)
+        build()
+        handleShare(intent)
+        if (savedInstanceState == null && !Store.hasAny()) {
+            Ui.message(this, "مرحبًا بك", "لتبدأ، افتح الإعدادات وأضف مفتاح API لمزود واحد على الأقل: Gemini أو Groq أو OpenRouter. المفاتيح تُحفظ مشفّرة على جهازك.")
+        }
+    }
 
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 24, 24, 24); layoutDirection = View.LAYOUT_DIRECTION_RTL }
-        val scroll = ScrollView(this)
-        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
-        scroll.addView(content)
-        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        setContentView(root)
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        if (intent != null) handleShare(intent)
+    }
 
-        content.addView(TextView(this).apply { text = "المساعد البصري الذكي"; textSize = 25f; gravity = Gravity.CENTER; contentDescription = "المساعد البصري الذكي"; setPadding(8, 18, 8, 22) })
+    private fun build() {
+        page = Page(this, "المساعد البصري الذكي")
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.layoutDirection = View.LAYOUT_DIRECTION_RTL
+        for (i in tabNames.indices) {
+            val b = Button(this)
+            b.text = tabNames[i]
+            b.isAllCaps = false
+            b.textSize = 15f
+            b.setOnClickListener { showTab(i) }
+            row.addView(b, LinearLayout.LayoutParams(0, -2, 1f))
+            tabButtons.add(b)
+        }
+        page.bottom.addView(row)
+        page.bottomButton("الإعدادات") { startActivity(Intent(this, SettingsActivity::class.java)) }
+        showTab(0)
+    }
 
-        addLabel(content, "مزود الذكاء الاصطناعي")
-        provider = Spinner(this)
-        provider.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, providerNames)
-        provider.setSelection(currentProvider)
-        content.addView(provider)
+    private fun showTab(i: Int) {
+        for (k in tabButtons.indices) {
+            val sel = (k == i)
+            tabButtons[k].isSelected = sel
+            tabButtons[k].contentDescription = "تبويب " + tabNames[k] + (if (sel) "، التبويب الحالي" else "")
+            tabButtons[k].alpha = if (sel) 1.0f else 0.65f
+        }
+        page.content.removeAllViews()
+        if (i == 0) {
+            page.section("وصف الصور")
+            page.button("وصف صورة من المعرض") { launch("describe", "gallery") }
+            page.button("وصف المشهد بالكاميرا") { launch("describe", "camera") }
+            page.section("أدوات الصور المتخصصة")
+            for (t in imageTools) {
+                page.button(t.second) { launch(t.first, "") }
+            }
+            page.button("الدردشة مع صورة (اسأل عن صورة)") { launch("chat", "") }
+        } else if (i == 1) {
+            page.section("مساعدات الحياة اليومية")
+            for (t in dailyTools) {
+                page.button(t.second) { launch(t.first, "") }
+            }
+            page.section("الكتابة والترجمة والأسئلة")
+            page.button("الكتابة بالذكاء الاصطناعي") { launch("write", "") }
+            page.button("ترجمة نص") { launch("translate_text", "") }
+            page.button("اسأل الذكاء الاصطناعي") { launch("ask", "") }
+        } else {
+            page.section("الصوت")
+            page.button("تحويل النص إلى صوت") { startActivity(Intent(this, TtsActivity::class.java)) }
+        }
+    }
 
-        addLabel(content, "مفتاح API")
-        apiKey = EditText(this).apply { hint = "مفتاح API"; setSingleLine(true); inputType = 129; setText(loadKey(currentProvider)) }
-        content.addView(apiKey)
+    private fun launch(mode: String, source: String) {
+        if (!Store.hasAny()) {
+            Ui.message(this, "مفتاح الذكاء الاصطناعي", "أضف مفتاحًا لمزود واحد على الأقل من الإعدادات أولًا.")
+            return
+        }
+        val i = Intent(this, WorkActivity::class.java)
+        i.putExtra("mode", mode)
+        i.putExtra("source", source)
+        i.putExtra("extra", "")
+        startActivity(i)
+    }
 
-        addLabel(content, "اسم النموذج (يمكنك تعديله بالكتابة)")
-        modelName = EditText(this).apply { hint = "اسم النموذج"; setSingleLine(true); setText(prefs.getString("model_$currentProvider", defaultModels[currentProvider])) }
-        content.addView(modelName)
-        addButton(content, "اختيار النموذج من القائمة") { chooseModel() }
-
-        provider.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onNothingSelected(parent: AdapterView<*>?) {}
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (position != currentProvider) {
-                    prefs.edit()
-                        .putString("model_$currentProvider", modelName.text.toString().trim())
-                        .putString("key_$currentProvider", apiKey.text.toString().trim())
-                        .apply()
-                    currentProvider = position
-                    modelName.setText(prefs.getString("model_$position", defaultModels[position]))
-                    apiKey.setText(loadKey(position))
-                }
-                prefs.edit().putInt("provider", position).apply()
+    // صور مُشارَكة من تطبيقات أخرى (بديل أدوات الشاشة)
+    private fun handleShare(i: Intent) {
+        val action = i.action
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+        val uris = ArrayList<String>()
+        if (action == Intent.ACTION_SEND) {
+            val u = i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+            if (u != null) uris.add(u.toString())
+        } else {
+            val list = i.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+            if (list != null) {
+                for (u in list) uris.add(u.toString())
             }
         }
-
-        addLabel(content, "اكتب طلبك")
-        prompt = EditText(this).apply { hint = "اكتب سؤالك أو النص المطلوب"; minLines = 3; gravity = Gravity.TOP or Gravity.START }
-        content.addView(prompt)
-
-        addButton(content, "اختيار صورة من الجهاز") { openGallery() }
-        addButton(content, "التقاط صورة بالكاميرا") { takePicture() }
-        addButton(content, "وصف الصورة أو إرسال السؤال") { sendRequest() }
-        addButton(content, "قراءة آخر نتيجة صوتيًا") { speak(output.text.toString()) }
-        addButton(content, "مسح الصورة المختارة") { selectedImage = null; announce("تم مسح الصورة المختارة") }
-
-        addLabel(content, "إعدادات القراءة الصوتية")
-        autoSpeak = CheckBox(this).apply { text = "قراءة النتيجة صوتيًا تلقائيًا"; textSize = 16f; isChecked = prefs.getBoolean("auto", true) }
-        content.addView(autoSpeak)
-        addButton(content, "اختيار محرك القراءة") { chooseEngine() }
-        addButton(content, "سرعة القراءة") { chooseRate() }
-        addButton(content, "إعدادات الصوت في النظام") { openSystemTts() }
-
-        addLabel(content, "النتيجة")
-        output = TextView(this).apply { text = "أهلًا بك. احفظ مفتاح API، ثم اكتب سؤالك أو اختر صورة."; textSize = 18f; setTextIsSelectable(true); setPadding(12, 16, 12, 24) }
-        content.addView(output)
-
-        addButton(root, "حفظ الإعدادات") { saveAll(); announce("تم حفظ الإعدادات على الجهاز") }
-    }
-
-    private fun loadKey(index: Int): String {
-        val saved = prefs.getString("key_$index", null)
-        if (saved != null) return saved
-        return if (index == 0) prefs.getString("key", "") ?: "" else ""
-    }
-
-    private fun saveAll() {
-        prefs.edit()
-            .putInt("provider", provider.selectedItemPosition)
-            .putString("key_$currentProvider", apiKey.text.toString().trim())
-            .putString("model_$currentProvider", modelName.text.toString().trim())
-            .putBoolean("auto", autoSpeak.isChecked)
-            .apply()
-    }
-
-    private fun addLabel(parent: LinearLayout, value: String) {
-        parent.addView(TextView(this).apply { text = value; textSize = 17f; setPadding(4, 14, 4, 5) })
-    }
-
-    private fun addButton(parent: LinearLayout, value: String, action: () -> Unit) {
-        parent.addView(Button(this).apply { text = value; textSize = 16f; isAllCaps = false; contentDescription = value; setOnClickListener { action() } })
-    }
-
-    private fun announce(value: String) {
-        output.text = value
-        output.contentDescription = value
-    }
-
-    private fun initTts(engine: String?) {
-        tts?.stop()
-        tts?.shutdown()
-        tts = if (engine.isNullOrEmpty()) TextToSpeech(this, this) else TextToSpeech(this, this, engine)
-    }
-
-    override fun onInit(status: Int) {
-        if (status == TextToSpeech.SUCCESS) {
-            tts?.setLanguage(Locale("ar"))
-            tts?.setSpeechRate(prefs.getFloat("rate", 1.0f))
+        if (uris.isEmpty()) return
+        i.action = null
+        if (!Store.hasAny()) {
+            Ui.message(this, "مفتاح الذكاء الاصطناعي", "أضف مفتاحًا لمزود واحد على الأقل من الإعدادات أولًا.")
+            return
         }
-    }
-
-    private fun speak(text: String) {
-        if (text.isNotBlank()) tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "result")
-    }
-
-    private fun chooseModel() {
-        val items = modelChoices[currentProvider].toTypedArray()
-        AlertDialog.Builder(this).setTitle("اختيار النموذج").setItems(items) { _, which ->
-            modelName.setText(items[which])
-            announce("تم اختيار النموذج ${items[which]}. اضغط حفظ الإعدادات")
-        }.show()
-    }
-
-    private fun chooseEngine() {
-        val engines = tts?.engines
-        if (engines == null || engines.isEmpty()) { announce("لا توجد محركات قراءة متاحة"); return }
-        val labels = engines.map { it.label.toString() }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("اختيار محرك القراءة").setItems(labels) { _, which ->
-            val name = engines[which].name
-            prefs.edit().putString("engine", name).apply()
-            initTts(name)
-            announce("تم اختيار محرك القراءة ${labels[which]}")
-        }.show()
-    }
-
-    private fun chooseRate() {
-        val labels = arrayOf("بطيئة", "عادية", "سريعة", "سريعة جدًا")
-        val rates = floatArrayOf(0.7f, 1.0f, 1.4f, 1.8f)
-        AlertDialog.Builder(this).setTitle("سرعة القراءة").setItems(labels) { _, which ->
-            prefs.edit().putFloat("rate", rates[which]).apply()
-            tts?.setSpeechRate(rates[which])
-            announce("تم ضبط سرعة القراءة: ${labels[which]}")
-        }.show()
-    }
-
-    private fun openSystemTts() {
-        try {
-            startActivity(Intent("com.android.settings.TTS_SETTINGS"))
-        } catch (e: Exception) {
-            announce("تعذر فتح إعدادات الصوت. افتحها من إعدادات الهاتف ثم إمكانية الوصول")
+        val keys = ArrayList<String>()
+        val labels = ArrayList<String>()
+        keys.add("describe")
+        labels.add("وصف الصورة")
+        for (t in imageTools) {
+            keys.add(t.first)
+            labels.add(t.second)
         }
-    }
-
-    private fun openGallery() {
-        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "image/*"; addCategory(Intent.CATEGORY_OPENABLE) }
-        startActivityForResult(i, pickImage)
-    }
-
-    private fun takePicture() {
-        try {
-            startActivityForResult(Intent(MediaStore.ACTION_IMAGE_CAPTURE), takePhoto)
-        } catch (e: Exception) {
-            announce("الكاميرا غير متاحة على هذا الجهاز")
-        }
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (resultCode != RESULT_OK || data == null) return
-        try {
-            if (requestCode == pickImage) {
-                val uri: Uri = data.data ?: return
-                try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (e: Exception) {}
-                selectedImage = MediaStore.Images.Media.getBitmap(contentResolver, uri)
-                announce("تم اختيار الصورة. اكتب ما تريد معرفته ثم اضغط إرسال")
-            } else if (requestCode == takePhoto) {
-                selectedImage = data.extras?.get("data") as? Bitmap
-                announce(if (selectedImage != null) "تم التقاط الصورة" else "لم تصل صورة من الكاميرا")
-            }
-        } catch (e: Exception) {
-            announce("تعذر فتح الصورة: ${e.message}")
-        }
-    }
-
-    private fun sendRequest() {
-        saveAll()
-        val key = apiKey.text.toString().trim()
-        val question = prompt.text.toString().trim()
-        val model = modelName.text.toString().trim().removePrefix("models/")
-        if (key.isEmpty()) { announce("أدخل مفتاح API أولًا"); return }
-        if (model.isEmpty()) { announce("أدخل اسم النموذج أو اخترها من القائمة"); return }
-        if (question.isEmpty() && selectedImage == null) { announce("اكتب سؤالًا أو اختر صورة أولًا"); return }
-        announce("جارٍ الاتصال بالذكاء الاصطناعي. انتظر قليلًا")
-        val mode = provider.selectedItemPosition
-        val image = selectedImage
-        val speakAuto = autoSpeak.isChecked
-        thread {
-            try {
-                val answer = when (mode) {
-                    0 -> callGemini(key, model, question.ifEmpty { "صف هذه الصورة بالتفصيل وبأسلوب واضح لمستخدم كفيف." }, image)
-                    1 -> callOpenAICompatible("https://openrouter.ai/api/v1/chat/completions", key, model, question, image)
-                    else -> callOpenAICompatible("https://api.groq.com/openai/v1/chat/completions", key, model, question, image)
-                }
-                runOnUiThread {
-                    announce(answer)
-                    if (speakAuto) speak(answer)
-                }
-            } catch (e: Exception) {
-                runOnUiThread { announce("حدث خطأ أثناء الاتصال: ${e.message ?: "خطأ غير معروف"}") }
+        for (t in dailyTools) {
+            if (t.first != "find") {
+                keys.add(t.first)
+                labels.add(t.second)
             }
         }
-    }
-
-    private fun shrink(bitmap: Bitmap): Bitmap {
-        val biggest = maxOf(bitmap.width, bitmap.height)
-        if (biggest <= 1600) return bitmap
-        val ratio = 1600f / biggest
-        return Bitmap.createScaledBitmap(bitmap, (bitmap.width * ratio).toInt(), (bitmap.height * ratio).toInt(), true)
-    }
-
-    private fun bitmapData(bitmap: Bitmap): String {
-        val out = ByteArrayOutputStream()
-        shrink(bitmap).compress(Bitmap.CompressFormat.JPEG, 82, out)
-        return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
-    }
-
-    private fun callGemini(key: String, model: String, question: String, image: Bitmap?): String {
-        val parts = JSONArray().put(JSONObject().put("text", "أجب بلغة واضحة ومناسبة لقارئ الشاشة، دون زخارف أو تنسيق Markdown. $question"))
-        if (image != null) parts.put(JSONObject().put("inline_data", JSONObject().put("mime_type", "image/jpeg").put("data", bitmapData(image))))
-        val body = JSONObject().put("contents", JSONArray().put(JSONObject().put("parts", parts))).toString()
-        val conn = (URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$key").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; doOutput = true; connectTimeout = 30000; readTimeout = 90000
-            setRequestProperty("Content-Type", "application/json")
+        keys.add("chat")
+        labels.add("الدردشة مع الصورة")
+        Ui.choose(this, "ماذا تريد من الصورة المُشارَكة؟", labels) { idx ->
+            val w = Intent(this, WorkActivity::class.java)
+            w.putExtra("mode", keys[idx])
+            w.putExtra("source", "uris")
+            w.putExtra("extra", "")
+            w.putStringArrayListExtra("uris", uris)
+            startActivity(w)
         }
-        conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-        val raw = (if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream).bufferedReader().use { it.readText() }
-        if (conn.responseCode !in 200..299) throw Exception(raw.take(500))
-        val candidates = JSONObject(raw).optJSONArray("candidates")
-        if (candidates == null || candidates.length() == 0) throw Exception("لم يصل رد من النموذج: " + raw.take(300))
-        val resultParts = candidates.getJSONObject(0).getJSONObject("content").getJSONArray("parts")
-        val sb = StringBuilder()
-        for (i in 0 until resultParts.length()) {
-            val p = resultParts.getJSONObject(i)
-            if (p.has("text") && !p.optBoolean("thought", false)) sb.append(p.getString("text"))
-        }
-        if (sb.isEmpty()) throw Exception("الرد فارغ")
-        return sb.toString()
-    }
-
-    private fun callOpenAICompatible(endpoint: String, key: String, model: String, question: String, image: Bitmap?): String {
-        val content = JSONArray().put(JSONObject().put("type", "text").put("text", "أجب بلغة واضحة ومناسبة لقارئ الشاشة دون زخارف. ${question.ifEmpty { "صف الصورة بالتفصيل." }}"))
-        if (image != null) content.put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", "data:image/jpeg;base64,${bitmapData(image)}")))
-        val body = JSONObject().put("model", model).put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", content))).toString()
-        val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; doOutput = true; connectTimeout = 30000; readTimeout = 90000
-            setRequestProperty("Authorization", "Bearer $key")
-            setRequestProperty("Content-Type", "application/json")
-        }
-        conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-        val raw = (if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream).bufferedReader().use { it.readText() }
-        if (conn.responseCode !in 200..299) throw Exception(raw.take(500))
-        return JSONObject(raw).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
-    }
-
-    override fun onDestroy() {
-        tts?.stop()
-        tts?.shutdown()
-        super.onDestroy()
     }
 }
