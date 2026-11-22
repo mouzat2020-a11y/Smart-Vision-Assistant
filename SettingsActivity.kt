@@ -1,0 +1,631 @@
+package com.mostafa.smartvision
+
+import android.app.Activity
+import android.content.Intent
+import android.os.Bundle
+import android.widget.EditText
+import java.io.File
+import kotlin.concurrent.thread
+
+class SettingsActivity : Activity() {
+    private var pageName = "main"
+    private var keyField: EditText? = null
+    private var modelField: EditText? = null
+    private var promptField: EditText? = null
+    private var testToken = 0
+    private val rates = listOf(0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        Store.init(this)
+        Speaker.init(this)
+        pageName = intent.getStringExtra("page") ?: "main"
+    }
+
+    override fun onResume() {
+        super.onResume()
+        build()
+    }
+
+    override fun onPause() {
+        saveFields()
+        super.onPause()
+    }
+
+    private fun open(name: String) {
+        val i = Intent(this, SettingsActivity::class.java)
+        i.putExtra("page", name)
+        startActivity(i)
+    }
+
+    private fun build() {
+        keyField = null
+        modelField = null
+        promptField = null
+        when (pageName) {
+            "gemini" -> providerPage("gemini")
+            "groq" -> providerPage("groq")
+            "describe" -> describePage()
+            "reading" -> readingPage()
+            "tts" -> ttsHubPage()
+            "ttsvoice" -> ttsVoicePage()
+            "tttrans" -> tttransPage()
+            "ttsadv" -> ttsAdvPage()
+            "fx" -> fxPage()
+            "help" -> helpPage()
+            else -> mainPage()
+        }
+    }
+
+    // ---------------- الصفحة الرئيسية للإعدادات ----------------
+    private fun mainPage() {
+        val p = Page(this, "الإعدادات")
+        p.section("مزودو الذكاء الاصطناعي")
+        p.text("المزود الأساسي الحالي: " + Store.pname(Store.provider()), 16f)
+        for (pr in Store.PROVIDERS) {
+            val st = if (Store.hasKey(pr)) "المفتاح محفوظ" else "لا يوجد مفتاح"
+            p.button("إعدادات " + Store.pname(pr) + " (" + st + ")") { open(pr) }
+        }
+        p.check("التبديل التلقائي لمزود آخر عند فشل الأساسي", Store.cross()) { v -> Store.setCross(v) }
+        p.section("خيارات التطبيق")
+        p.button("تعليمات وصف الصور") { open("describe") }
+        p.button("القراءة الصوتية") { open("reading") }
+        p.button("تحويل النص إلى صوت: الصوت والانفعال واللهجة") { open("tts") }
+        p.button("المساعدة وحول التطبيق") { open("help") }
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    // ---------------- صفحة مزود واحد ----------------
+    private fun providerPage(pr: String) {
+        val name = Store.pname(pr)
+        val p = Page(this, "إعدادات " + name)
+        val st = if (Store.hasKey(pr)) "المفتاح محفوظ ومشفّر" else "لا يوجد مفتاح"
+        p.section("المفتاح")
+        p.label("الحالة: " + st + ". احصل على المفتاح من الموقع " + Store.psite(pr))
+        keyField = p.edit("الصق مفتاح " + name + " هنا", "", 1, true)
+        p.button("حفظ المفتاح") { saveKeyNow() }
+        p.button("حذف المفتاح") {
+            Store.removeKey(pr)
+            Ui.toast(this, "تم حذف المفتاح")
+            build()
+        }
+        p.section("المزود الأساسي")
+        p.check("استخدام " + name + " كمزود أساسي", Store.provider() == pr) { v ->
+            if (v) {
+                Store.setProvider(pr)
+                Ui.toast(this, "أصبح " + name + " هو المزود الأساسي")
+            } else {
+                val other = Store.PROVIDERS.first { it != pr }
+                Store.setProvider(other)
+                Ui.toast(this, "أصبح " + Store.pname(other) + " هو المزود الأساسي")
+            }
+        }
+        p.section("النموذج")
+        val cur = Store.model(pr)
+        p.label("النموذج الحالي: " + (if (cur.isEmpty()) "تلقائي، يجرّب النماذج بالترتيب" else cur))
+        p.button("اختيار النموذج من القائمة") { chooseModel(pr) }
+        modelField = p.edit("أو اكتب اسم نموذج بنفسك، والفارغ يعني تلقائي. يُحفظ عند الخروج", cur, 1, false)
+        p.section("الاختبار")
+        p.button("اختبار الاتصال بـ" + name) { testProvider(pr) }
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private fun saveKeyNow() {
+        val f = keyField
+        if (f == null) return
+        val raw = f.text.toString()
+        if (raw.isBlank()) {
+            Ui.toast(this, "الصق المفتاح أولًا")
+            return
+        }
+        val err = Store.saveKey(pageName, raw)
+        if (err == null) {
+            f.setText("")
+            Ui.toast(this, "تم حفظ المفتاح مشفّرًا على الجهاز")
+            build()
+        } else {
+            Ui.toast(this, err)
+        }
+    }
+
+    // يحفظ ما كُتب في الحقول تلقائيًا عند الخروج أو قبل الاختبار
+    private fun saveFields() {
+        val k = keyField
+        if (k != null && k.text.toString().isNotBlank()) {
+            val err = Store.saveKey(pageName, k.text.toString())
+            if (err == null) {
+                k.setText("")
+                Ui.toast(this, "تم حفظ المفتاح")
+            }
+        }
+        val m = modelField
+        if (m != null) Store.setModel(pageName, m.text.toString())
+        val d = promptField
+        if (d != null) Store.setDescribePrompt(d.text.toString())
+    }
+
+    private fun chooseModel(pr: String) {
+        val list = ArrayList<String>()
+        list.add("تلقائي (يجرّب النماذج بالترتيب)")
+        list.addAll(Ai.pickList(pr))
+        Ui.choose(this, "نماذج " + Store.pname(pr), list) { i ->
+            val v = if (i == 0) "" else list[i]
+            Store.setModel(pr, v)
+            Ui.toast(this, if (v.isEmpty()) "تم اختيار التلقائي" else "تم اختيار " + v)
+            build()
+        }
+    }
+
+    private fun testProvider(pr: String) {
+        saveFields()
+        if (!Store.hasKey(pr)) {
+            Ui.message(this, "اختبار الاتصال", "لا يوجد مفتاح محفوظ لـ" + Store.pname(pr) + ". الصق المفتاح واضغط حفظ المفتاح أولًا.")
+            return
+        }
+        testToken++
+        val my = testToken
+        Ui.toast(this, "جاري اختبار الاتصال")
+        thread {
+            val r = Ai.askProvider(pr, listOf(Msg("user", "Reply with exactly: OK")), { my != testToken }, { })
+            runOnUiThread {
+                val t = r.text
+                if (t != null) {
+                    var extra = ""
+                    if (pr == "gemini" && Store.good().isNotEmpty()) extra = " النموذج الذي اشتغل: " + Store.good() + "."
+                    Ui.message(this, "نتيجة الاختبار", "الاتصال بـ" + Store.pname(pr) + " يعمل." + extra + " الرد: " + t)
+                } else {
+                    Ui.message(this, "نتيجة الاختبار", "فشل الاتصال: " + (r.error ?: ""))
+                }
+            }
+        }
+    }
+
+    // ---------------- تعليمات الوصف ----------------
+    private fun describePage() {
+        val p = Page(this, "تعليمات وصف الصور")
+        p.label("هذه التعليمات تُستخدم عند وصف الصور. يُحفظ التعديل تلقائيًا عند الخروج.")
+        promptField = p.edit("تعليمات الوصف", Store.describePrompt(), 8, false)
+        p.button("استعادة التعليمات الافتراضية") {
+            Store.setDescribePrompt("")
+            promptField?.setText(Prompts.DEFAULT_DESCRIBE)
+            Ui.toast(this, "تمت استعادة التعليمات الافتراضية")
+        }
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    // ---------------- القراءة الصوتية ----------------
+    private fun readingPage() {
+        val p = Page(this, "القراءة الصوتية")
+        p.button("اختيار محرك القراءة") { chooseEngine() }
+        p.button("سرعة القراءة الحالية: " + Store.rate() + ". اضغط للتغيير") { chooseRate() }
+        p.check("قراءة النتيجة صوتيًا تلقائيًا", Store.autoSpeak()) { v -> Store.setAutoSpeak(v) }
+        p.button("اختبار النطق") { Speaker.speak("أهلًا بك، هذه تجربة لمحرك النطق في المساعد البصري الذكي.") }
+        p.button("فتح إعدادات الصوت في النظام") {
+            try {
+                startActivity(Intent("com.android.settings.TTS_SETTINGS"))
+            } catch (e: Exception) {
+                Ui.toast(this, "تعذر فتح إعدادات الصوت")
+            }
+        }
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private fun chooseEngine() {
+        val engines = Speaker.engines()
+        val labels = ArrayList<String>()
+        labels.add("محرك النظام الافتراضي")
+        for (e in engines) labels.add(e.label.toString())
+        Ui.choose(this, "محرك القراءة", labels) { i ->
+            if (i == 0) {
+                Speaker.setEngine("")
+                Ui.toast(this, "تم اختيار المحرك الافتراضي")
+            } else {
+                Speaker.setEngine(engines[i - 1].name)
+                Ui.toast(this, "تم اختيار " + engines[i - 1].label.toString())
+            }
+        }
+    }
+
+    private fun chooseRate() {
+        val labels = ArrayList<String>()
+        for (r in rates) labels.add("سرعة " + r + (if (r == Store.rate()) " (الحالية)" else ""))
+        Ui.choose(this, "سرعة القراءة", labels) { i ->
+            Speaker.setRate(rates[i])
+            build()
+            Speaker.speak("هذه تجربة للسرعة الجديدة")
+        }
+    }
+
+    // ---------------- تحويل النص إلى صوت ----------------
+    private fun ttsHubPage() {
+        val p = Page(this, "إعدادات تحويل النص إلى صوت")
+        p.button("إعدادات الصوت والقراءة (الصوت، الانفعال، اللهجة، السرعة، تجربة الصوت، المحرك)") { open("ttsvoice") }
+        val tr = if (Store.ttsTranslateOn()) "مفعّلة إلى " + Prompts.LANGS[Store.ttsLang()].first else "معطّلة"
+        p.button("إعدادات الترجمة: " + tr) { open("tttrans") }
+        val g = if (Store.hasKey("gemini")) "موجود" else "مش موجود"
+        val q = if (Store.hasKey("groq")) "موجود" else "مش موجود"
+        p.button("المفاتيح: Gemini " + g + "، Groq " + q) { open("main") }
+        p.button("موسيقى ومؤثرات صوتية") { open("fx") }
+        p.button("إعدادات متقدمة") { open("ttsadv") }
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private fun engineLabel(): String {
+        return if (Store.ttsEngine() == "system") "صوت النظام" else "Gemini"
+    }
+
+    private fun ttsVoicePage() {
+        val p = Page(this, "إعدادات الصوت والقراءة")
+        p.button("المحرك: " + engineLabel()) { chooseTtsEngine() }
+        var vd = ""
+        for (x in Prompts.VOICES) if (x.first == Store.ttsVoice()) vd = x.second
+        p.button("الصوت: " + Store.ttsVoice() + " - " + vd) { chooseVoice() }
+        p.button("الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first) { chooseEmotion() }
+        p.button("اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first) { chooseAccent() }
+        p.button("سرعة الكلام: " + Prompts.PACE[Store.ttsPace()].first) { choosePace() }
+        p.button("تجربة الصوت الحالي") { playSample() }
+        p.button("سرعة القراءة بمحرك النظام وإعداداته") { open("reading") }
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private fun trModelLabel(): String {
+        val m = Store.ttsTrModel()
+        return if (m.isEmpty()) "تلقائي" else m
+    }
+
+    private fun tttransPage() {
+        val p = Page(this, "إعدادات الترجمة")
+        p.check("الترجمة قبل التحويل مفعّلة (كل تحويل يترجم النص أولًا)", Store.ttsTranslateOn()) { v -> Store.setTtsTranslateOn(v) }
+        p.button("لغة الترجمة: " + Prompts.LANGS[Store.ttsLang()].first) { chooseLang() }
+        p.button("نموذج الترجمة: " + trModelLabel()) { chooseTrModel() }
+        p.label("زر ترجمة وقراءة في شاشة التحويل يترجم دائمًا حتى لو الإعداد معطّل.")
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private val mixNames = listOf("يدوي بالأرقام (اكتب في أول السطر رقم الصوت ثم نقطتين، مثل 2: كلام الصوت الثاني)", "كل سطر بصوت", "كل فقرة بصوت (الفقرات بينها سطر فاضي)")
+
+    private fun ttsAdvPage() {
+        val p = Page(this, "إعدادات متقدمة")
+        p.button("المحرك: " + engineLabel()) { chooseTtsEngine() }
+        val n = Store.nVoices()
+        p.button("عدد الأصوات: " + (if (n <= 1) "صوت واحد" else n.toString())) { chooseNVoices() }
+        p.button("توزيع الأصوات: " + mixNames[Store.mixMode()].substringBefore(" (")) { chooseMixMode() }
+        if (n > 1) {
+            p.button("اختيار الأصوات الإضافية: " + TtsEngine.activeVoices().joinToString("، ")) { chooseExtraVoices(n) }
+        }
+        var mn = Store.ttsModel()
+        for (m in Prompts.TTS_MODELS) if (m.first == mn) mn = m.second
+        p.button("نموذج Gemini للصوت: " + mn) { chooseTtsModel() }
+        p.button("نموذج الترجمة: " + trModelLabel()) { chooseTrModel() }
+        p.button("إعادة تجربة نماذج Gemini اللي حصتها خلصت") {
+            Store.saveBad(HashMap<String, Long>())
+            Ui.toast(this, "تم مسح قائمة النماذج المتوقفة، هتتجرب كلها من جديد")
+        }
+        p.button("فتح الملف بتطبيق تاني") { openFileElsewhere() }
+        p.button("نسخ مسار الملف") {
+            val path = Session.lastAudioPath
+            if (path.isEmpty()) Ui.toast(this, "مفيش ملف صوتي لسه") else Ui.copy(this, path)
+        }
+        p.button("نسخ الترجمة") {
+            if (Session.lastTranslation.isEmpty()) Ui.toast(this, "مفيش ترجمة لسه") else Ui.copy(this, Session.lastTranslation)
+        }
+        p.button("حذف الملف المؤقت") { deleteTemp() }
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private fun chooseTtsEngine() {
+        Ui.choose(this, "محرك التحويل", listOf("Gemini (أصوات ذكاء اصطناعي)", "صوت النظام (محرك نطق الهاتف)")) { i ->
+            Store.setTtsEngine(if (i == 0) "gemini" else "system")
+            build()
+        }
+    }
+
+    private fun chooseNVoices() {
+        val labels = ArrayList<String>()
+        labels.add("صوت واحد")
+        for (k in 2..8) labels.add(k.toString() + " أصوات")
+        Ui.choose(this, "عدد الأصوات (الصوت رقم 1 هو اللي في إعدادات الصوت)", labels) { i ->
+            Store.setNVoices(i + 1)
+            if (i + 1 > 1) chooseExtraVoices(i + 1) else build()
+        }
+    }
+
+    private fun chooseExtraVoices(n: Int) {
+        val extras = ArrayList<String>()
+        fun ask(idx: Int) {
+            if (idx > n) {
+                Store.setExtraVoices(extras)
+                Ui.toast(this, "تم اختيار الأصوات")
+                build()
+                return
+            }
+            val labels = ArrayList<String>()
+            for (x in Prompts.VOICES) labels.add(x.first + " - " + x.second)
+            Ui.choose(this, "اختيار الصوت رقم " + idx, labels) { i ->
+                extras.add(Prompts.VOICES[i].first)
+                ask(idx + 1)
+            }
+        }
+        ask(2)
+    }
+
+    private fun chooseMixMode() {
+        Ui.choose(this, "توزيع الأصوات", mixNames) { i ->
+            Store.setMixMode(i)
+            if (Store.nVoices() <= 1) Ui.toast(this, "طريقة التوزيع اتحفظت. اختار عدد الأصوات عشان التوزيع يشتغل")
+            build()
+        }
+    }
+
+    private fun chooseTrModel() {
+        val list = ArrayList<String>()
+        list.add("تلقائي")
+        list.addAll(Ai.GEMINI_PICK)
+        Ui.choose(this, "نموذج الترجمة", list) { i ->
+            Store.setTtsTrModel(if (i == 0) "" else list[i])
+            build()
+        }
+    }
+
+    private fun openFileElsewhere() {
+        val path = Session.lastAudioPath
+        if (path.isEmpty() || !File(path).exists()) {
+            Ui.toast(this, "مفيش ملف صوتي لسه")
+            return
+        }
+        val uri = Files.insertDownload(this, "SmartVision_" + Files.stamp() + ".wav", "audio/wav", File(path).readBytes())
+        if (uri == null) {
+            Ui.toast(this, "الفتح بتطبيق تاني يحتاج أندرويد 10 أو أحدث")
+            return
+        }
+        val i = Intent(Intent.ACTION_VIEW)
+        i.setDataAndType(uri, "audio/wav")
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            startActivity(Intent.createChooser(i, "فتح الملف بتطبيق"))
+        } catch (e: Exception) {
+            Ui.toast(this, "مفيش تطبيق يفتح الملف")
+        }
+    }
+
+    private fun deleteTemp() {
+        AudioPlayer.stop()
+        var n = 0
+        val files = cacheDir.listFiles()
+        if (files != null) {
+            for (f in files) {
+                if (f.name.startsWith("tts_") || f.name.startsWith("sample") || f.name.startsWith("fx_")) {
+                    if (f.delete()) n++
+                }
+            }
+        }
+        Session.lastAudioPath = ""
+        Session.lastDryPath = ""
+        Ui.toast(this, "تم حذف " + n + " ملف مؤقت")
+    }
+
+    // ---------------- موسيقى ومؤثرات ----------------
+    private fun fxPage() {
+        val p = Page(this, "موسيقى ومؤثرات صوتية")
+        p.check("مزج الموسيقى والمؤثرات مع الصوت عند كل تحويل", Store.fxOn()) { v -> Store.setFxOn(v) }
+        p.button("الموسيقى: " + Fx.musicLabel(Store.fxMusic())) { chooseFx("music") }
+        p.button("مؤثر البيئة الأول: " + Fx.ambLabel(Store.fxAmb1())) { chooseFx("amb1") }
+        p.button("مؤثر البيئة الثاني: " + Fx.ambLabel(Store.fxAmb2())) { chooseFx("amb2") }
+        p.button("مستوى الموسيقى: " + Store.fxVol(0) + "%") { chooseVol(0) }
+        p.button("مستوى المؤثر الأول: " + Store.fxVol(1) + "%") { chooseVol(1) }
+        p.button("مستوى المؤثر الثاني: " + Store.fxVol(2) + "%") { chooseVol(2) }
+        p.button("مقدمة قبل الكلام: " + Store.fxIntro() + " ثانية") { chooseSecs(true) }
+        p.button("خاتمة بعد الكلام: " + Store.fxOutro() + " ثانية") { chooseSecs(false) }
+        p.button("عينة من الموسيقى المختارة") { fxPreview("music", Store.fxMusic()) }
+        p.button("عينة من المؤثر الأول") { fxPreview("amb", Store.fxAmb1()) }
+        p.button("عينة من المؤثر الثاني") { fxPreview("amb", Store.fxAmb2()) }
+        p.button("مزج الآن على آخر ملف صوتي جاهز") { mixNow() }
+        p.label("الموسيقى والمؤثرات بتتولد بالكود جوه التطبيق، من غير إنترنت.")
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private fun setFx(kind: String, id: String) {
+        if (kind == "music") Store.setFxMusic(id)
+        else if (kind == "amb1") Store.setFxAmb1(id)
+        else Store.setFxAmb2(id)
+    }
+
+    private fun chooseFx(kind: String) {
+        val items = if (kind == "music") Fx.MUSIC else Fx.AMBS
+        val type = if (kind == "music") "music" else "amb"
+        val groups = ArrayList<String>()
+        for (x in items) if (!groups.contains(x.group)) groups.add(x.group)
+        val top = ArrayList<String>()
+        top.add("بدون")
+        top.addAll(groups)
+        Ui.choose(this, if (kind == "music") "اختيار الموسيقى" else "اختيار المؤثر", top) { gi ->
+            if (gi == 0) {
+                setFx(kind, "")
+                build()
+            } else {
+                val g = groups[gi - 1]
+                val sub = items.filter { x -> x.group == g }
+                val labels = ArrayList<String>()
+                for (x in sub) labels.add(x.label)
+                Ui.choose(this, g, labels) { si ->
+                    setFx(kind, sub[si].id)
+                    build()
+                    fxPreview(type, sub[si].id)
+                }
+            }
+        }
+    }
+
+    private fun chooseVol(i: Int) {
+        val vals = listOf(0, 10, 20, 30, 40, 50, 60, 70, 80, 100)
+        val labels = ArrayList<String>()
+        for (v in vals) labels.add(v.toString() + "%")
+        Ui.choose(this, "المستوى", labels) { k ->
+            Store.setFxVol(i, vals[k])
+            build()
+        }
+    }
+
+    private fun chooseSecs(intro: Boolean) {
+        val labels = ArrayList<String>()
+        for (k in 0..12) labels.add(k.toString() + " ثانية")
+        Ui.choose(this, if (intro) "مقدمة قبل الكلام" else "خاتمة بعد الكلام", labels) { k ->
+            if (intro) Store.setFxIntro(k) else Store.setFxOutro(k)
+            build()
+        }
+    }
+
+    private fun fxPreview(type: String, id: String) {
+        if (id.isEmpty()) {
+            Ui.toast(this, "اختار الأول")
+            return
+        }
+        Ui.toast(this, "جاري تجهيز العينة")
+        testToken++
+        val my = testToken
+        thread {
+            try {
+                val pcm = Fx.preview(type, id, 24000)
+                val f = File(cacheDir, "fx_sample.wav")
+                f.writeBytes(TtsEngine.wav(pcm, 24000))
+                runOnUiThread {
+                    if (my == testToken) {
+                        Speaker.stop()
+                        AudioPlayer.play(f.absolutePath) { }
+                    }
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { Ui.toast(this, "تعذر تجهيز العينة") }
+            }
+        }
+    }
+
+    private fun mixNow() {
+        val dry = Session.lastDryPath
+        val pcm = if (dry.isEmpty()) null else TtsEngine.readWavPcm(dry)
+        if (pcm == null) {
+            Ui.toast(this, "حوّل نصًا إلى صوت الأول، وبعدها اعمل المزج")
+            return
+        }
+        Ui.toast(this, "جاري المزج")
+        val rate = Session.lastRate
+        thread {
+            try {
+                val mixed = Fx.mix(pcm, rate, Store.fxMusic(), Store.fxAmb1(), Store.fxAmb2(),
+                    Store.fxVol(0), Store.fxVol(1), Store.fxVol(2), Store.fxIntro(), Store.fxOutro())
+                val f = File(cacheDir, "tts_mix_" + Files.stamp() + ".wav")
+                f.writeBytes(TtsEngine.wav(mixed, rate))
+                runOnUiThread {
+                    Session.lastAudioPath = f.absolutePath
+                    Speaker.stop()
+                    if (!AudioPlayer.play(f.absolutePath) { }) Ui.toast(this, "تم المزج لكن تعذر التشغيل")
+                    else Ui.toast(this, "تم المزج، والملف الجديد هو آخر ملف جاهز")
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { Ui.toast(this, "تعذر المزج") }
+            }
+        }
+    }
+
+    private fun chooseVoice() {
+        val labels = ArrayList<String>()
+        for (x in Prompts.VOICES) labels.add(x.first + " - " + x.second)
+        Ui.choose(this, "اختيار الصوت", labels) { i ->
+            Store.setTtsVoice(Prompts.VOICES[i].first)
+            build()
+            playSample()
+        }
+    }
+
+    private fun chooseEmotion() {
+        val labels = ArrayList<String>()
+        for (x in Prompts.EMO) labels.add(x.first)
+        Ui.choose(this, "اختيار الانفعال", labels) { i ->
+            Store.setTtsEmotion(i)
+            build()
+        }
+    }
+
+    private fun chooseAccent() {
+        val labels = ArrayList<String>()
+        for (x in Prompts.ACCENTS) labels.add(x.first)
+        Ui.choose(this, "اختيار اللهجة", labels) { i ->
+            Store.setTtsAccent(i)
+            build()
+        }
+    }
+
+    private fun choosePace() {
+        val labels = ArrayList<String>()
+        for (x in Prompts.PACE) labels.add(x.first)
+        Ui.choose(this, "سرعة الكلام", labels) { i ->
+            Store.setTtsPace(i)
+            build()
+        }
+    }
+
+    private fun chooseTtsModel() {
+        val labels = ArrayList<String>()
+        for (x in Prompts.TTS_MODELS) labels.add(x.second)
+        Ui.choose(this, "نموذج الصوت (إذا انتهت حصته يجرّب التالي تلقائيًا)", labels) { i ->
+            Store.setTtsModel(Prompts.TTS_MODELS[i].first)
+            build()
+        }
+    }
+
+    private fun chooseLang() {
+        val labels = ArrayList<String>()
+        for (x in Prompts.LANGS) labels.add(x.first)
+        Ui.choose(this, "لغة الترجمة قبل التحويل", labels) { i ->
+            Store.setTtsLang(i)
+            build()
+        }
+    }
+
+    private fun playSample() {
+        if (!Store.hasKey("gemini")) {
+            Ui.toast(this, "تجربة الصوت تحتاج مفتاح Gemini")
+            return
+        }
+        Ui.toast(this, "جاري تجهيز العينة")
+        testToken++
+        val my = testToken
+        thread {
+            val out = TtsEngine.synthChunk("أهلًا بك، هذه تجربة بسيطة للصوت الذي سيقرأ لك النص.", Store.ttsVoice(), TtsEngine.styleText(), { my != testToken }, { })
+            val pcm = out.pcm
+            runOnUiThread {
+                if (pcm == null) {
+                    Ui.toast(this, "تعذرت العينة: " + (out.error ?: ""))
+                } else {
+                    try {
+                        val f = File(cacheDir, "sample.wav")
+                        f.writeBytes(TtsEngine.wav(TtsEngine.pad(pcm, out.rate), out.rate))
+                        Speaker.stop()
+                        AudioPlayer.play(f.absolutePath) { }
+                    } catch (e: Exception) {
+                        Ui.toast(this, "تعذر تشغيل العينة")
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------------- المساعدة ----------------
+    private fun helpPage() {
+        val p = Page(this, "المساعدة وحول التطبيق")
+        val t = p.text(helpText(), 16f)
+        t.setTextIsSelectable(true)
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private fun helpText(): String {
+        return "أولًا: المفاتيح. من الإعدادات افتح إعدادات Gemini أو Groq، والصق المفتاح، واضغط حفظ المفتاح. Gemini من aistudio.google.com/apikey، وGroq من console.groq.com/keys. المفاتيح تُحفظ مشفّرة على جهازك.\n\n" +
+            "ثانيًا: لا يوجد زر حفظ للإعدادات. كل اختيار يُطبَّق فورًا، وما تكتبه في الحقول يُحفظ تلقائيًا عند الخروج من الصفحة.\n\n" +
+            "ثالثًا: التبويبات في أسفل الشاشة الرئيسية: الصور، المساعدات والكتابة، الصوت.\n\n" +
+            "رابعًا: الصور. اختر المهمة ثم الكاميرا أو المعرض. ويمكنك مشاركة صورة أو لقطة شاشة من أي تطبيق إلى هذا التطبيق، فيسألك ماذا تريد منها.\n\n" +
+            "خامسًا: بعد النتيجة يمكنك الاستماع والنسخ والمشاركة والحفظ والدردشة وتكرار المهمة.\n\n" +
+            "سادسًا: تحويل النص إلى صوت يحتاج مفتاح Gemini. ويمكنك القراءة الفورية بمحرك النظام بدون مفتاح.\n\n" +
+            "ملاحظة: نتيجة الكابتشا قد تخطئ في الحروف المتشابهة. ولا تعتمد على وصف الأدوية أو الأطعمة وحده، وراجع الصيدلي أو المختص.\n\n" +
+            "المساعد البصري الذكي تطبيق مستقل يعمل بمفاتيحك أنت، ولا يحتاج Jieshuo Plus. كل الطلبات تذهب للمزود الذي تختاره مباشرة."
+    }
+}
