@@ -6,8 +6,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.media.ExifInterface
-import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -220,60 +221,111 @@ object Speaker : TextToSpeech.OnInitListener {
 }
 
 // ================== تشغيل ملف صوتي ==================
-// علاج الفرقعة: عند انتهاء الملف لا نقطع المشغّل ولا نستدعي onDone فورًا،
-// بل ننتظر لحظة حتى يُغلق مسار الصوت بهدوء، ثم نحرره، وبعدها فقط نبلّغ بالانتهاء
-// (حتى لا يبدأ قارئ الشاشة بنطق "انتهى التشغيل" في نفس لحظة إغلاق الصوت).
-// وعند الإيقاف اليدوي نخفض الصوت إلى صفر أولًا ثم نحرر المشغّل بعد جزء من الثانية.
+// تشغيل مباشر بـ AudioTrack بدل MediaPlayer. بعد انتهاء الكلام نكتب صمتًا قصيرًا
+// حتى يبقى مسار الصوت مفتوحًا ثم يُغلق بهدوء (يقلل الفرقعة عند إغلاق الصوت)،
+// ثم نبلّغ بالانتهاء. وعند الإيقاف اليدوي نخفض الصوت إلى صفر قبل التحرير.
 object AudioPlayer {
-    private var player: MediaPlayer? = null
     private val handler = Handler(Looper.getMainLooper())
+    private var track: AudioTrack? = null
+    @Volatile private var gen = 0
+    @Volatile private var active = false
 
-    private fun release(mp: MediaPlayer) {
-        try { mp.stop() } catch (e: Exception) {}
-        try { mp.release() } catch (e: Exception) {}
+    private fun kill(tr: AudioTrack) {
+        try { tr.pause() } catch (e: Exception) {}
+        try { tr.flush() } catch (e: Exception) {}
+        try { tr.release() } catch (e: Exception) {}
     }
 
     fun play(path: String, onDone: () -> Unit): Boolean {
         stop()
+        val bytes: ByteArray
         try {
-            val mp = MediaPlayer()
-            try {
-                mp.setAudioAttributes(
+            bytes = File(path).readBytes()
+        } catch (e: Exception) {
+            return false
+        }
+        if (bytes.size <= 44) return false
+        val rate = ByteBuffer.wrap(bytes, 24, 4).order(ByteOrder.LITTLE_ENDIAN).int
+        if (rate < 8000 || rate > 48000) return false
+        val pcm = bytes.copyOfRange(44, bytes.size)
+        val minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        if (minBuf <= 0) return false
+        val tr: AudioTrack
+        try {
+            tr = AudioTrack.Builder()
+                .setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
-            } catch (e: Exception) {
-            }
-            mp.setDataSource(path)
-            mp.setOnCompletionListener {
-                handler.postDelayed({
-                    if (player === mp) {
-                        player = null
-                        release(mp)
-                        onDone()
-                    }
-                }, 450)
-            }
-            mp.prepare()
-            mp.start()
-            player = mp
-            return true
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(rate)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes(minBuf * 2)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
         } catch (e: Exception) {
             return false
         }
+        val my = ++gen
+        track = tr
+        active = true
+        Thread {
+            var finished = false
+            try {
+                tr.play()
+                val chunk = 4096
+                var off = 0
+                while (off < pcm.size && gen == my) {
+                    val n = minOf(chunk, pcm.size - off)
+                    val w = tr.write(pcm, off, n)
+                    if (w <= 0) break
+                    off += w
+                }
+                if (gen == my) active = false
+                val silence = ByteArray(chunk)
+                var left = rate * 2 * 800 / 1000
+                while (left > 0 && gen == my) {
+                    val n = minOf(chunk, left)
+                    val w = tr.write(silence, 0, n)
+                    if (w <= 0) break
+                    left -= w
+                }
+                finished = (gen == my)
+                if (finished) {
+                    try { tr.stop() } catch (e: Exception) {}
+                    Thread.sleep(400)
+                }
+            } catch (e: Exception) {
+            }
+            handler.post {
+                if (gen == my) {
+                    track = null
+                    active = false
+                }
+                kill(tr)
+                if (finished && gen == my) onDone()
+            }
+        }.start()
+        return true
     }
 
     fun stop() {
-        val mp = player ?: return
-        player = null
-        try { mp.setVolume(0f, 0f) } catch (e: Exception) {}
-        handler.postDelayed({ release(mp) }, 90)
+        gen++
+        active = false
+        val tr = track ?: return
+        track = null
+        try { tr.setVolume(0f) } catch (e: Exception) {}
+        handler.postDelayed({ kill(tr) }, 90)
     }
 
     fun isPlaying(): Boolean {
-        return try { player?.isPlaying ?: false } catch (e: Exception) { false }
+        return active
     }
 }
 
