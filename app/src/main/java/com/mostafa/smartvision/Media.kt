@@ -5,10 +5,13 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.media.AudioAttributes
 import android.media.ExifInterface
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.speech.tts.TextToSpeech
 import android.util.Base64
@@ -30,6 +33,10 @@ object Session {
     var repeatExtra: String = ""
     var repeatLabel: String = ""
     var lastAudioPath: String = ""
+    var lastDryPath: String = ""
+    var lastRate: Int = 24000
+    var lastTranslation: String = ""
+    var lastSavedDesc: String = ""
 }
 
 // ================== الصور ==================
@@ -213,15 +220,42 @@ object Speaker : TextToSpeech.OnInitListener {
 }
 
 // ================== تشغيل ملف صوتي ==================
+// علاج الفرقعة: عند انتهاء الملف لا نقطع المشغّل ولا نستدعي onDone فورًا،
+// بل ننتظر لحظة حتى يُغلق مسار الصوت بهدوء، ثم نحرره، وبعدها فقط نبلّغ بالانتهاء
+// (حتى لا يبدأ قارئ الشاشة بنطق "انتهى التشغيل" في نفس لحظة إغلاق الصوت).
+// وعند الإيقاف اليدوي نخفض الصوت إلى صفر أولًا ثم نحرر المشغّل بعد جزء من الثانية.
 object AudioPlayer {
     private var player: MediaPlayer? = null
+    private val handler = Handler(Looper.getMainLooper())
+
+    private fun release(mp: MediaPlayer) {
+        try { mp.stop() } catch (e: Exception) {}
+        try { mp.release() } catch (e: Exception) {}
+    }
 
     fun play(path: String, onDone: () -> Unit): Boolean {
         stop()
         try {
             val mp = MediaPlayer()
+            try {
+                mp.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+            } catch (e: Exception) {
+            }
             mp.setDataSource(path)
-            mp.setOnCompletionListener { onDone() }
+            mp.setOnCompletionListener {
+                handler.postDelayed({
+                    if (player === mp) {
+                        player = null
+                        release(mp)
+                        onDone()
+                    }
+                }, 450)
+            }
             mp.prepare()
             mp.start()
             player = mp
@@ -232,12 +266,10 @@ object AudioPlayer {
     }
 
     fun stop() {
-        try {
-            player?.stop()
-            player?.release()
-        } catch (e: Exception) {
-        }
+        val mp = player ?: return
         player = null
+        try { mp.setVolume(0f, 0f) } catch (e: Exception) {}
+        handler.postDelayed({ release(mp) }, 90)
     }
 
     fun isPlaying(): Boolean {
@@ -293,7 +325,7 @@ object TtsEngine {
                     if (b.size > 48 && b[0] == 'R'.code.toByte() && b[1] == 'I'.code.toByte() && b[2] == 'F'.code.toByte()) {
                         b = b.copyOfRange(48, b.size)
                     }
-                    return TtsOut(b, rate, null)
+                    return TtsOut(polish(b, rate), rate, null)
                 }
             }
         } catch (e: Exception) {
@@ -352,8 +384,36 @@ object TtsEngine {
         return TtsOut(null, 0, lastErr)
     }
 
-    // نص طويل: يقسمه ويدمج الأجزاء ويرجع ملف WAV كاملًا
-    fun synthAll(text: String, voice: String, style: String, cancel: () -> Boolean, progress: (String) -> Unit): TtsOut {
+    // ---------- تنعيم الصوت لمنع الفرقعة عند البداية والنهاية ----------
+    private fun scaleSample(b: ByteArray, idx: Int, g: Float) {
+        val lo = b[idx * 2].toInt() and 0xFF
+        val hi = b[idx * 2 + 1].toInt()
+        val s = (hi shl 8) or lo
+        val v = (s * g).toInt()
+        b[idx * 2] = (v and 0xFF).toByte()
+        b[idx * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+    }
+
+    fun polish(pcm: ByteArray, rate: Int): ByteArray {
+        val n = pcm.size / 2
+        if (n < 64) return pcm
+        val out = pcm.copyOf(n * 2)
+        val fin = minOf(n / 2, rate * 20 / 1000)
+        val fout = minOf(n / 2, rate * 80 / 1000)
+        for (i in 0 until fin) scaleSample(out, i, i.toFloat() / fin.toFloat())
+        for (i in 0 until fout) scaleSample(out, n - 1 - i, i.toFloat() / fout.toFloat())
+        return out
+    }
+
+    // صمت قصير قبل الكلام وبعده حتى لا يفرقع المشغّل عند البدء والإيقاف
+    fun pad(pcm: ByteArray, rate: Int): ByteArray {
+        val head = ByteArray((rate * 100 / 1000) * 2)
+        val tail = ByteArray((rate * 600 / 1000) * 2)
+        return head + pcm + tail
+    }
+
+    // نص طويل: يقسمه ويدمج الأجزاء (بدون صمت إضافي)
+    fun synthRaw(text: String, voice: String, style: String, cancel: () -> Boolean, progress: (String) -> Unit): TtsOut {
         val chunks = Speaker.split(text, 1200)
         if (chunks.isEmpty()) return TtsOut(null, 0, "لا يوجد نص للتحويل")
         val pcm = ByteArrayOutputStream()
@@ -365,13 +425,113 @@ object TtsEngine {
             val b = r.pcm
             if (b == null) return TtsOut(null, 0, r.error)
             rate = r.rate
-            if (i > 0) {
-                val n = (rate * 120 / 1000) * 2
-                pcm.write(ByteArray(n))
-            }
+            if (i > 0) pcm.write(ByteArray((rate * 120 / 1000) * 2))
             pcm.write(b)
         }
         return TtsOut(pcm.toByteArray(), rate, null)
+    }
+
+    fun synthAll(text: String, voice: String, style: String, cancel: () -> Boolean, progress: (String) -> Unit): TtsOut {
+        val r = synthRaw(text, voice, style, cancel, progress)
+        val b = r.pcm ?: return r
+        return TtsOut(pad(b, r.rate), r.rate, null)
+    }
+
+    // ---------- أصوات متعددة ----------
+    class Seg(val voice: Int, val text: String)
+
+    private fun digitsToInt(s: String): Int {
+        val sb = StringBuilder()
+        for (c in s) {
+            if (c in '٠'..'٩') sb.append(c - '٠') else sb.append(c)
+        }
+        return sb.toString().toIntOrNull() ?: 1
+    }
+
+    fun segments(text: String, n: Int, mode: Int): List<Seg> {
+        val out = ArrayList<Seg>()
+        if (n <= 1) {
+            out.add(Seg(0, text))
+            return out
+        }
+        if (mode == 1) {
+            var k = 0
+            for (line in text.split("\n")) {
+                val t = line.trim()
+                if (t.isNotEmpty()) {
+                    out.add(Seg(k % n, t))
+                    k++
+                }
+            }
+        } else if (mode == 2) {
+            var k = 0
+            for (para in text.split(Regex("\n\\s*\n"))) {
+                val t = para.trim()
+                if (t.isNotEmpty()) {
+                    out.add(Seg(k % n, t))
+                    k++
+                }
+            }
+        } else {
+            var cur = 0
+            val re = Regex("^[\\[(]?([0-9٠-٩]{1,2})[\\])]?\\s*[:：-]\\s*(.*)$")
+            for (line in text.split("\n")) {
+                val t = line.trim()
+                if (t.isEmpty()) continue
+                val m = re.find(t)
+                if (m != null) {
+                    cur = (digitsToInt(m.groupValues[1]) - 1).coerceIn(0, n - 1)
+                    val rest = m.groupValues[2].trim()
+                    if (rest.isNotEmpty()) out.add(Seg(cur, rest))
+                } else {
+                    out.add(Seg(cur, t))
+                }
+            }
+        }
+        if (out.isEmpty()) out.add(Seg(0, text))
+        return out
+    }
+
+    // الأصوات المستخدمة: الصوت الأول من الإعدادات ثم الإضافية، وتكمل تلقائيًا لو ناقصة
+    fun activeVoices(): List<String> {
+        val n = Store.nVoices()
+        val list = ArrayList<String>()
+        list.add(Store.ttsVoice())
+        for (v in Store.extraVoices()) if (!list.contains(v) && list.size < n) list.add(v)
+        for (x in Prompts.VOICES) {
+            if (list.size >= n) break
+            if (!list.contains(x.first)) list.add(x.first)
+        }
+        return list
+    }
+
+    fun synthMulti(text: String, voices: List<String>, mode: Int, style: String, cancel: () -> Boolean, progress: (String) -> Unit): TtsOut {
+        val n = voices.size
+        val segs = segments(text, n, mode)
+        val all = ByteArrayOutputStream()
+        var rate = 24000
+        for (i in segs.indices) {
+            if (cancel()) return TtsOut(null, 0, "تم الإيقاف")
+            if (segs.size > 1) progress("جاري تحويل المقطع " + (i + 1) + " من " + segs.size)
+            val s = segs[i]
+            val r = synthRaw(s.text, voices[s.voice.coerceIn(0, n - 1)], style, cancel, progress)
+            val b = r.pcm ?: return TtsOut(null, 0, r.error)
+            rate = r.rate
+            if (i > 0) all.write(ByteArray((rate * 250 / 1000) * 2))
+            all.write(b)
+        }
+        return TtsOut(pad(all.toByteArray(), rate), rate, null)
+    }
+
+    // قراءة ملف WAV بسيط (رأس 44 بايت) وإرجاع الصوت الخام
+    fun readWavPcm(path: String): ByteArray? {
+        try {
+            val b = File(path).readBytes()
+            if (b.size <= 44) return null
+            return b.copyOfRange(44, b.size)
+        } catch (e: Exception) {
+            return null
+        }
     }
 
     fun wav(pcm: ByteArray, rate: Int): ByteArray {

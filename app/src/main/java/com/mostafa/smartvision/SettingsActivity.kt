@@ -8,6 +8,7 @@ import java.io.File
 import kotlin.concurrent.thread
 
 class SettingsActivity : Activity() {
+
     private var pageName = "main"
     private var keyField: EditText? = null
     private var modelField: EditText? = null
@@ -47,7 +48,11 @@ class SettingsActivity : Activity() {
             "groq" -> providerPage("groq")
             "describe" -> describePage()
             "reading" -> readingPage()
-            "tts" -> ttsPage()
+            "tts" -> ttsHubPage()
+            "ttsvoice" -> ttsVoicePage()
+            "tttrans" -> tttransPage()
+            "ttsadv" -> ttsAdvPage()
+            "fx" -> fxPage()
             "help" -> helpPage()
             else -> mainPage()
         }
@@ -233,20 +238,344 @@ class SettingsActivity : Activity() {
     }
 
     // ---------------- تحويل النص إلى صوت ----------------
-    private fun ttsPage() {
+    private fun ttsHubPage() {
         val p = Page(this, "إعدادات تحويل النص إلى صوت")
+        val n = Store.nVoices()
+        p.section("الصوت والقراءة")
+        p.button("المحرك: " + engineLabel()) { chooseTtsEngine() }
         var vd = ""
         for (x in Prompts.VOICES) if (x.first == Store.ttsVoice()) vd = x.second
         p.button("الصوت: " + Store.ttsVoice() + " - " + vd) { chooseVoice() }
         p.button("الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first) { chooseEmotion() }
         p.button("اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first) { chooseAccent() }
         p.button("سرعة الكلام: " + Prompts.PACE[Store.ttsPace()].first) { choosePace() }
+        p.button("نموذج الصوت: " + ttsModelLabel()) { chooseTtsModel() }
+        p.button("تجربة الصوت الحالي") { playSample() }
+        p.button("سرعة القراءة بمحرك النظام وإعداداته") { open("reading") }
+        p.section("الأصوات المتعددة")
+        p.button("عدد الأصوات: " + (if (n <= 1) "صوت واحد" else n.toString())) { chooseNVoices() }
+        p.button("توزيع الأصوات: " + mixNames[Store.mixMode()].substringBefore(" (")) { chooseMixMode() }
+        if (n > 1) {
+            p.button("اختيار الأصوات الإضافية: " + TtsEngine.activeVoices().joinToString("، ")) { chooseExtraVoices(n) }
+        }
+        p.section("الترجمة")
+        p.check("الترجمة قبل التحويل مفعّلة (كل تحويل يترجم النص أولًا)", Store.ttsTranslateOn()) { v -> Store.setTtsTranslateOn(v) }
+        p.button("لغة الترجمة قبل التحويل: " + Prompts.LANGS[Store.ttsLang()].first) { chooseLang() }
+        p.button("نموذج الترجمة: " + trModelLabel()) { chooseTrModel() }
+        p.section("موسيقى ومؤثرات صوتية (مطر، بحر، طيور، أدعية، ومزج على ملف جاهز)")
+        p.check("مزج الموسيقى والمؤثرات مع الصوت عند كل تحويل", Store.fxOn()) { v -> Store.setFxOn(v) }
+        p.button("الموسيقى: " + Fx.musicLabel(Store.fxMusic())) { chooseFx("music") }
+        p.button("مؤثر البيئة الأول: " + Fx.ambLabel(Store.fxAmb1())) { chooseFx("amb1") }
+        p.button("مؤثر البيئة الثاني: " + Fx.ambLabel(Store.fxAmb2())) { chooseFx("amb2") }
+        p.button("كل إعدادات الموسيقى والمؤثرات (المستويات، المقدمة، الخاتمة، العينات، المزج)") { open("fx") }
+        p.section("المفاتيح والملفات")
+        val g = if (Store.hasKey("gemini")) "موجود" else "مش موجود"
+        val q = if (Store.hasKey("groq")) "موجود" else "مش موجود"
+        p.button("المفاتيح: Gemini " + g + "، Groq " + q) { open("main") }
+        p.button("إعادة تجربة نماذج Gemini اللي حصتها خلصت") {
+            Store.saveBad(HashMap<String, Long>())
+            Ui.toast(this, "تم مسح قائمة النماذج المتوقفة، هتتجرب كلها من جديد")
+        }
+        p.button("فتح الملف بتطبيق تاني") { openFileElsewhere() }
+        p.button("نسخ مسار الملف") {
+            val path = Session.lastAudioPath
+            if (path.isEmpty()) Ui.toast(this, "مفيش ملف صوتي لسه") else Ui.copy(this, path)
+        }
+        p.button("نسخ الترجمة") {
+            if (Session.lastTranslation.isEmpty()) Ui.toast(this, "مفيش ترجمة لسه") else Ui.copy(this, Session.lastTranslation)
+        }
+        p.button("حذف الملف المؤقت") { deleteTemp() }
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private fun engineLabel(): String {
+        return if (Store.ttsEngine() == "system") "صوت النظام" else "Gemini"
+    }
+
+    private fun ttsModelLabel(): String {
         var mn = Store.ttsModel()
         for (m in Prompts.TTS_MODELS) if (m.first == mn) mn = m.second
-        p.button("نموذج الصوت: " + mn) { chooseTtsModel() }
+        return mn
+    }
+
+    private fun ttsVoicePage() {
+        val p = Page(this, "إعدادات الصوت والقراءة")
+        p.button("المحرك: " + engineLabel()) { chooseTtsEngine() }
+        var vd = ""
+        for (x in Prompts.VOICES) if (x.first == Store.ttsVoice()) vd = x.second
+        p.button("الصوت: " + Store.ttsVoice() + " - " + vd) { chooseVoice() }
+        p.button("الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first) { chooseEmotion() }
+        p.button("اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first) { chooseAccent() }
+        p.button("سرعة الكلام: " + Prompts.PACE[Store.ttsPace()].first) { choosePace() }
+        p.button("نموذج الصوت: " + ttsModelLabel()) { chooseTtsModel() }
         p.button("لغة الترجمة قبل التحويل: " + Prompts.LANGS[Store.ttsLang()].first) { chooseLang() }
+        val nv = Store.nVoices()
+        p.button("عدد الأصوات: " + (if (nv <= 1) "صوت واحد" else nv.toString())) { chooseNVoices() }
+        p.button("توزيع الأصوات: " + mixNames[Store.mixMode()].substringBefore(" (")) { chooseMixMode() }
+        if (nv > 1) {
+            p.button("اختيار الأصوات الإضافية: " + TtsEngine.activeVoices().joinToString("، ")) { chooseExtraVoices(nv) }
+        }
+        p.button("موسيقى ومؤثرات صوتية (مطر، بحر، طيور، أدعية، ومزج على ملف جاهز)") { open("fx") }
         p.button("تجربة الصوت الحالي") { playSample() }
+        p.button("سرعة القراءة بمحرك النظام وإعداداته") { open("reading") }
         p.bottomButton("رجوع") { finish() }
+    }
+
+    private fun trModelLabel(): String {
+        val m = Store.ttsTrModel()
+        return if (m.isEmpty()) "تلقائي" else m
+    }
+
+    private fun tttransPage() {
+        val p = Page(this, "إعدادات الترجمة")
+        p.check("الترجمة قبل التحويل مفعّلة (كل تحويل يترجم النص أولًا)", Store.ttsTranslateOn()) { v -> Store.setTtsTranslateOn(v) }
+        p.button("لغة الترجمة: " + Prompts.LANGS[Store.ttsLang()].first) { chooseLang() }
+        p.button("نموذج الترجمة: " + trModelLabel()) { chooseTrModel() }
+        p.label("زر ترجمة وقراءة في شاشة التحويل يترجم دائمًا حتى لو الإعداد معطّل.")
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private val mixNames = listOf("يدوي بالأرقام (اكتب في أول السطر رقم الصوت ثم نقطتين، مثل 2: كلام الصوت الثاني)", "كل سطر بصوت", "كل فقرة بصوت (الفقرات بينها سطر فاضي)")
+
+    private fun ttsAdvPage() {
+        val p = Page(this, "إعدادات متقدمة")
+        p.button("المحرك: " + engineLabel()) { chooseTtsEngine() }
+        val n = Store.nVoices()
+        p.button("عدد الأصوات: " + (if (n <= 1) "صوت واحد" else n.toString())) { chooseNVoices() }
+        p.button("توزيع الأصوات: " + mixNames[Store.mixMode()].substringBefore(" (")) { chooseMixMode() }
+        if (n > 1) {
+            p.button("اختيار الأصوات الإضافية: " + TtsEngine.activeVoices().joinToString("، ")) { chooseExtraVoices(n) }
+        }
+        p.button("نموذج Gemini للصوت: " + ttsModelLabel()) { chooseTtsModel() }
+        p.button("نموذج الترجمة: " + trModelLabel()) { chooseTrModel() }
+        p.button("إعادة تجربة نماذج Gemini اللي حصتها خلصت") {
+            Store.saveBad(HashMap<String, Long>())
+            Ui.toast(this, "تم مسح قائمة النماذج المتوقفة، هتتجرب كلها من جديد")
+        }
+        p.button("فتح الملف بتطبيق تاني") { openFileElsewhere() }
+        p.button("نسخ مسار الملف") {
+            val path = Session.lastAudioPath
+            if (path.isEmpty()) Ui.toast(this, "مفيش ملف صوتي لسه") else Ui.copy(this, path)
+        }
+        p.button("نسخ الترجمة") {
+            if (Session.lastTranslation.isEmpty()) Ui.toast(this, "مفيش ترجمة لسه") else Ui.copy(this, Session.lastTranslation)
+        }
+        p.button("حذف الملف المؤقت") { deleteTemp() }
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private fun chooseTtsEngine() {
+        Ui.choose(this, "محرك التحويل", listOf("Gemini (أصوات ذكاء اصطناعي)", "صوت النظام (محرك نطق الهاتف)")) { i ->
+            Store.setTtsEngine(if (i == 0) "gemini" else "system")
+            build()
+        }
+    }
+
+    private fun chooseNVoices() {
+        val labels = ArrayList<String>()
+        labels.add("صوت واحد")
+        for (k in 2..8) labels.add(k.toString() + " أصوات")
+        Ui.choose(this, "عدد الأصوات (الصوت رقم 1 هو اللي في إعدادات الصوت)", labels) { i ->
+            Store.setNVoices(i + 1)
+            if (i + 1 > 1) chooseExtraVoices(i + 1) else build()
+        }
+    }
+
+    private fun chooseExtraVoices(n: Int) {
+        val extras = ArrayList<String>()
+        fun ask(idx: Int) {
+            if (idx > n) {
+                Store.setExtraVoices(extras)
+                Ui.toast(this, "تم اختيار الأصوات")
+                build()
+                return
+            }
+            val labels = ArrayList<String>()
+            for (x in Prompts.VOICES) labels.add(x.first + " - " + x.second)
+            Ui.choose(this, "اختيار الصوت رقم " + idx, labels) { i ->
+                extras.add(Prompts.VOICES[i].first)
+                ask(idx + 1)
+            }
+        }
+        ask(2)
+    }
+
+    private fun chooseMixMode() {
+        Ui.choose(this, "توزيع الأصوات", mixNames) { i ->
+            Store.setMixMode(i)
+            if (Store.nVoices() <= 1) Ui.toast(this, "طريقة التوزيع اتحفظت. اختار عدد الأصوات عشان التوزيع يشتغل")
+            build()
+        }
+    }
+
+    private fun chooseTrModel() {
+        val list = ArrayList<String>()
+        list.add("تلقائي")
+        list.addAll(Ai.GEMINI_PICK)
+        Ui.choose(this, "نموذج الترجمة", list) { i ->
+            Store.setTtsTrModel(if (i == 0) "" else list[i])
+            build()
+        }
+    }
+
+    private fun openFileElsewhere() {
+        val path = Session.lastAudioPath
+        if (path.isEmpty() || !File(path).exists()) {
+            Ui.toast(this, "مفيش ملف صوتي لسه")
+            return
+        }
+        val uri = Files.insertDownload(this, "SmartVision_" + Files.stamp() + ".wav", "audio/wav", File(path).readBytes())
+        if (uri == null) {
+            Ui.toast(this, "الفتح بتطبيق تاني يحتاج أندرويد 10 أو أحدث")
+            return
+        }
+        val i = Intent(Intent.ACTION_VIEW)
+        i.setDataAndType(uri, "audio/wav")
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            startActivity(Intent.createChooser(i, "فتح الملف بتطبيق"))
+        } catch (e: Exception) {
+            Ui.toast(this, "مفيش تطبيق يفتح الملف")
+        }
+    }
+
+    private fun deleteTemp() {
+        AudioPlayer.stop()
+        var n = 0
+        val files = cacheDir.listFiles()
+        if (files != null) {
+            for (f in files) {
+                if (f.name.startsWith("tts_") || f.name.startsWith("sample") || f.name.startsWith("fx_")) {
+                    if (f.delete()) n++
+                }
+            }
+        }
+        Session.lastAudioPath = ""
+        Session.lastDryPath = ""
+        Ui.toast(this, "تم حذف " + n + " ملف مؤقت")
+    }
+
+    // ---------------- موسيقى ومؤثرات ----------------
+    private fun fxPage() {
+        val p = Page(this, "موسيقى ومؤثرات صوتية")
+        p.check("مزج الموسيقى والمؤثرات مع الصوت عند كل تحويل", Store.fxOn()) { v -> Store.setFxOn(v) }
+        p.button("الموسيقى: " + Fx.musicLabel(Store.fxMusic())) { chooseFx("music") }
+        p.button("مؤثر البيئة الأول: " + Fx.ambLabel(Store.fxAmb1())) { chooseFx("amb1") }
+        p.button("مؤثر البيئة الثاني: " + Fx.ambLabel(Store.fxAmb2())) { chooseFx("amb2") }
+        p.button("مستوى الموسيقى: " + Store.fxVol(0) + "%") { chooseVol(0) }
+        p.button("مستوى المؤثر الأول: " + Store.fxVol(1) + "%") { chooseVol(1) }
+        p.button("مستوى المؤثر الثاني: " + Store.fxVol(2) + "%") { chooseVol(2) }
+        p.button("مقدمة قبل الكلام: " + Store.fxIntro() + " ثانية") { chooseSecs(true) }
+        p.button("خاتمة بعد الكلام: " + Store.fxOutro() + " ثانية") { chooseSecs(false) }
+        p.button("عينة من الموسيقى المختارة") { fxPreview("music", Store.fxMusic()) }
+        p.button("عينة من المؤثر الأول") { fxPreview("amb", Store.fxAmb1()) }
+        p.button("عينة من المؤثر الثاني") { fxPreview("amb", Store.fxAmb2()) }
+        p.button("مزج الآن على آخر ملف صوتي جاهز") { mixNow() }
+        p.label("الموسيقى والمؤثرات بتتولد بالكود جوه التطبيق، من غير إنترنت.")
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private fun setFx(kind: String, id: String) {
+        if (kind == "music") Store.setFxMusic(id)
+        else if (kind == "amb1") Store.setFxAmb1(id)
+        else Store.setFxAmb2(id)
+    }
+
+    private fun chooseFx(kind: String) {
+        val items = if (kind == "music") Fx.MUSIC else Fx.AMBS
+        val type = if (kind == "music") "music" else "amb"
+        val groups = ArrayList<String>()
+        for (x in items) if (!groups.contains(x.group)) groups.add(x.group)
+        val top = ArrayList<String>()
+        top.add("بدون")
+        top.addAll(groups)
+        Ui.choose(this, if (kind == "music") "اختيار الموسيقى" else "اختيار المؤثر", top) { gi ->
+            if (gi == 0) {
+                setFx(kind, "")
+                build()
+            } else {
+                val g = groups[gi - 1]
+                val sub = items.filter { x -> x.group == g }
+                val labels = ArrayList<String>()
+                for (x in sub) labels.add(x.label)
+                Ui.choose(this, g, labels) { si ->
+                    setFx(kind, sub[si].id)
+                    build()
+                    fxPreview(type, sub[si].id)
+                }
+            }
+        }
+    }
+
+    private fun chooseVol(i: Int) {
+        val vals = listOf(0, 10, 20, 30, 40, 50, 60, 70, 80, 100)
+        val labels = ArrayList<String>()
+        for (v in vals) labels.add(v.toString() + "%")
+        Ui.choose(this, "المستوى", labels) { k ->
+            Store.setFxVol(i, vals[k])
+            build()
+        }
+    }
+
+    private fun chooseSecs(intro: Boolean) {
+        val labels = ArrayList<String>()
+        for (k in 0..12) labels.add(k.toString() + " ثانية")
+        Ui.choose(this, if (intro) "مقدمة قبل الكلام" else "خاتمة بعد الكلام", labels) { k ->
+            if (intro) Store.setFxIntro(k) else Store.setFxOutro(k)
+            build()
+        }
+    }
+
+    private fun fxPreview(type: String, id: String) {
+        if (id.isEmpty()) {
+            Ui.toast(this, "اختار الأول")
+            return
+        }
+        Ui.toast(this, "جاري تجهيز العينة")
+        testToken++
+        val my = testToken
+        thread {
+            try {
+                val pcm = Fx.preview(type, id, 24000)
+                val f = File(cacheDir, "fx_sample.wav")
+                f.writeBytes(TtsEngine.wav(pcm, 24000))
+                runOnUiThread {
+                    if (my == testToken) {
+                        Speaker.stop()
+                        AudioPlayer.play(f.absolutePath) { }
+                    }
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { Ui.toast(this, "تعذر تجهيز العينة") }
+            }
+        }
+    }
+
+    private fun mixNow() {
+        val dry = Session.lastDryPath
+        val pcm = if (dry.isEmpty()) null else TtsEngine.readWavPcm(dry)
+        if (pcm == null) {
+            Ui.toast(this, "حوّل نصًا إلى صوت الأول، وبعدها اعمل المزج")
+            return
+        }
+        Ui.toast(this, "جاري المزج")
+        val rate = Session.lastRate
+        thread {
+            try {
+                val mixed = Fx.mix(pcm, rate, Store.fxMusic(), Store.fxAmb1(), Store.fxAmb2(),
+                    Store.fxVol(0), Store.fxVol(1), Store.fxVol(2), Store.fxIntro(), Store.fxOutro())
+                val f = File(cacheDir, "tts_mix_" + Files.stamp() + ".wav")
+                f.writeBytes(TtsEngine.wav(mixed, rate))
+                runOnUiThread {
+                    Session.lastAudioPath = f.absolutePath
+                    Speaker.stop()
+                    if (!AudioPlayer.play(f.absolutePath) { }) Ui.toast(this, "تم المزج لكن تعذر التشغيل")
+                    else Ui.toast(this, "تم المزج، والملف الجديد هو آخر ملف جاهز")
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { Ui.toast(this, "تعذر المزج") }
+            }
+        }
     }
 
     private fun chooseVoice() {
@@ -321,7 +650,7 @@ class SettingsActivity : Activity() {
                 } else {
                     try {
                         val f = File(cacheDir, "sample.wav")
-                        f.writeBytes(TtsEngine.wav(pcm, out.rate))
+                        f.writeBytes(TtsEngine.wav(TtsEngine.pad(pcm, out.rate), out.rate))
                         Speaker.stop()
                         AudioPlayer.play(f.absolutePath) { }
                     } catch (e: Exception) {

@@ -205,6 +205,43 @@ object Store {
         prefs().edit().putString("bad", sb.toString()).apply()
     }
 
+    fun sp(): SharedPreferences { return prefs() }
+
+    // ---- إعدادات متقدمة لتحويل النص لصوت ----
+    fun ttsEngine(): String { return prefs().getString("t_engine", "gemini") ?: "gemini" }
+    fun setTtsEngine(v: String) { prefs().edit().putString("t_engine", v).apply() }
+    fun ttsTranslateOn(): Boolean { return prefs().getBoolean("t_trans_on", false) }
+    fun setTtsTranslateOn(v: Boolean) { prefs().edit().putBoolean("t_trans_on", v).apply() }
+    fun ttsTrModel(): String { return prefs().getString("t_trmodel", "") ?: "" }
+    fun setTtsTrModel(v: String) { prefs().edit().putString("t_trmodel", v).apply() }
+    fun nVoices(): Int { return prefs().getInt("t_nv", 1).coerceIn(1, 8) }
+    fun setNVoices(v: Int) { prefs().edit().putInt("t_nv", v.coerceIn(1, 8)).apply() }
+    fun mixMode(): Int { return prefs().getInt("t_mix", 1).coerceIn(0, 2) }
+    fun setMixMode(v: Int) { prefs().edit().putInt("t_mix", v).apply() }
+    fun extraVoices(): List<String> {
+        val s = prefs().getString("t_xv", "") ?: ""
+        val out = ArrayList<String>()
+        for (x in s.split(",")) if (x.isNotBlank()) out.add(x.trim())
+        return out
+    }
+    fun setExtraVoices(l: List<String>) { prefs().edit().putString("t_xv", l.joinToString(",")).apply() }
+
+    // ---- موسيقى ومؤثرات ----
+    fun fxOn(): Boolean { return prefs().getBoolean("fx_on", false) }
+    fun setFxOn(v: Boolean) { prefs().edit().putBoolean("fx_on", v).apply() }
+    fun fxMusic(): String { return prefs().getString("fx_music", "") ?: "" }
+    fun setFxMusic(v: String) { prefs().edit().putString("fx_music", v).apply() }
+    fun fxAmb1(): String { return prefs().getString("fx_amb1", "") ?: "" }
+    fun setFxAmb1(v: String) { prefs().edit().putString("fx_amb1", v).apply() }
+    fun fxAmb2(): String { return prefs().getString("fx_amb2", "") ?: "" }
+    fun setFxAmb2(v: String) { prefs().edit().putString("fx_amb2", v).apply() }
+    fun fxVol(i: Int): Int { return prefs().getInt("fx_vol" + i, if (i == 0) 25 else 35).coerceIn(0, 100) }
+    fun setFxVol(i: Int, v: Int) { prefs().edit().putInt("fx_vol" + i, v).apply() }
+    fun fxIntro(): Int { return prefs().getInt("fx_intro", 4).coerceIn(0, 20) }
+    fun setFxIntro(v: Int) { prefs().edit().putInt("fx_intro", v).apply() }
+    fun fxOutro(): Int { return prefs().getInt("fx_outro", 4).coerceIn(0, 20) }
+    fun setFxOutro(v: Int) { prefs().edit().putInt("fx_outro", v).apply() }
+
     // ---- إعدادات تحويل النص لصوت ----
     fun ttsVoice(): String { return prefs().getString("t_voice", "Kore") ?: "Kore" }
     fun setTtsVoice(v: String) { prefs().edit().putString("t_voice", v).apply() }
@@ -414,6 +451,15 @@ object Ai {
         return AiResult(null, lastErr)
     }
 
+    // مثل askProvider لكن مع تحديد نموذج Gemini بعينه كأول محاولة (فارغ = الإعداد العادي)
+    fun askGeminiModel(model: String, history: List<Msg>, cancel: () -> Boolean, progress: (String) -> Unit): AiResult {
+        val h = withRule(history)
+        val r = callGemini(h, cancel, progress, if (model.isEmpty()) null else model)
+        val t = r.text
+        if (t != null) return AiResult(PlainText.clean(t), null)
+        return r
+    }
+
     // ---------- Gemini ----------
     private fun geminiContents(h: List<Msg>): JSONArray {
         val arr = JSONArray()
@@ -471,10 +517,10 @@ object Ai {
         }
     }
 
-    private fun callGemini(h: List<Msg>, cancel: () -> Boolean, progress: (String) -> Unit): AiResult {
+    private fun callGemini(h: List<Msg>, cancel: () -> Boolean, progress: (String) -> Unit, override: String? = null): AiResult {
         val key = Store.key("gemini")
         if (key.isEmpty()) return AiResult(null, "لا يوجد مفتاح Gemini. أضفه من الإعدادات.")
-        val first = Store.model("gemini")
+        val first = override ?: Store.model("gemini")
         val cand = ArrayList<String>()
         if (first.isNotEmpty()) cand.add(first)
         for (m in GEMINI_CHAIN) if (m != first) cand.add(m)
