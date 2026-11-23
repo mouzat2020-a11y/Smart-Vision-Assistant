@@ -5,10 +5,13 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.media.AudioAttributes
 import android.media.ExifInterface
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.speech.tts.TextToSpeech
 import android.util.Base64
@@ -217,15 +220,42 @@ object Speaker : TextToSpeech.OnInitListener {
 }
 
 // ================== تشغيل ملف صوتي ==================
+// علاج الفرقعة: عند انتهاء الملف لا نقطع المشغّل ولا نستدعي onDone فورًا،
+// بل ننتظر لحظة حتى يُغلق مسار الصوت بهدوء، ثم نحرره، وبعدها فقط نبلّغ بالانتهاء
+// (حتى لا يبدأ قارئ الشاشة بنطق "انتهى التشغيل" في نفس لحظة إغلاق الصوت).
+// وعند الإيقاف اليدوي نخفض الصوت إلى صفر أولًا ثم نحرر المشغّل بعد جزء من الثانية.
 object AudioPlayer {
     private var player: MediaPlayer? = null
+    private val handler = Handler(Looper.getMainLooper())
+
+    private fun release(mp: MediaPlayer) {
+        try { mp.stop() } catch (e: Exception) {}
+        try { mp.release() } catch (e: Exception) {}
+    }
 
     fun play(path: String, onDone: () -> Unit): Boolean {
         stop()
         try {
             val mp = MediaPlayer()
+            try {
+                mp.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+            } catch (e: Exception) {
+            }
             mp.setDataSource(path)
-            mp.setOnCompletionListener { onDone() }
+            mp.setOnCompletionListener {
+                handler.postDelayed({
+                    if (player === mp) {
+                        player = null
+                        release(mp)
+                        onDone()
+                    }
+                }, 450)
+            }
             mp.prepare()
             mp.start()
             player = mp
@@ -236,12 +266,10 @@ object AudioPlayer {
     }
 
     fun stop() {
-        try {
-            player?.stop()
-            player?.release()
-        } catch (e: Exception) {
-        }
+        val mp = player ?: return
         player = null
+        try { mp.setVolume(0f, 0f) } catch (e: Exception) {}
+        handler.postDelayed({ release(mp) }, 90)
     }
 
     fun isPlaying(): Boolean {
@@ -370,8 +398,8 @@ object TtsEngine {
         val n = pcm.size / 2
         if (n < 64) return pcm
         val out = pcm.copyOf(n * 2)
-        val fin = minOf(n / 2, rate * 15 / 1000)
-        val fout = minOf(n / 2, rate * 40 / 1000)
+        val fin = minOf(n / 2, rate * 20 / 1000)
+        val fout = minOf(n / 2, rate * 80 / 1000)
         for (i in 0 until fin) scaleSample(out, i, i.toFloat() / fin.toFloat())
         for (i in 0 until fout) scaleSample(out, n - 1 - i, i.toFloat() / fout.toFloat())
         return out
@@ -379,8 +407,8 @@ object TtsEngine {
 
     // صمت قصير قبل الكلام وبعده حتى لا يفرقع المشغّل عند البدء والإيقاف
     fun pad(pcm: ByteArray, rate: Int): ByteArray {
-        val head = ByteArray((rate * 80 / 1000) * 2)
-        val tail = ByteArray((rate * 350 / 1000) * 2)
+        val head = ByteArray((rate * 100 / 1000) * 2)
+        val tail = ByteArray((rate * 600 / 1000) * 2)
         return head + pcm + tail
     }
 

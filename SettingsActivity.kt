@@ -240,14 +240,51 @@ class SettingsActivity : Activity() {
     // ---------------- تحويل النص إلى صوت ----------------
     private fun ttsHubPage() {
         val p = Page(this, "إعدادات تحويل النص إلى صوت")
-        p.button("إعدادات الصوت والقراءة (الصوت، الانفعال، اللهجة، السرعة، تجربة الصوت، المحرك)") { open("ttsvoice") }
-        val tr = if (Store.ttsTranslateOn()) "مفعّلة إلى " + Prompts.LANGS[Store.ttsLang()].first else "معطّلة"
-        p.button("إعدادات الترجمة: " + tr) { open("tttrans") }
+        val n = Store.nVoices()
+        p.section("الصوت والقراءة")
+        p.button("المحرك: " + engineLabel()) { chooseTtsEngine() }
+        var vd = ""
+        for (x in Prompts.VOICES) if (x.first == Store.ttsVoice()) vd = x.second
+        p.button("الصوت: " + Store.ttsVoice() + " - " + vd) { chooseVoice() }
+        p.button("الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first) { chooseEmotion() }
+        p.button("اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first) { chooseAccent() }
+        p.button("سرعة الكلام: " + Prompts.PACE[Store.ttsPace()].first) { choosePace() }
+        p.button("نموذج الصوت: " + ttsModelLabel()) { chooseTtsModel() }
+        p.button("تجربة الصوت الحالي") { playSample() }
+        p.button("سرعة القراءة بمحرك النظام وإعداداته") { open("reading") }
+        p.section("الأصوات المتعددة")
+        p.button("عدد الأصوات: " + (if (n <= 1) "صوت واحد" else n.toString())) { chooseNVoices() }
+        p.button("توزيع الأصوات: " + mixNames[Store.mixMode()].substringBefore(" (")) { chooseMixMode() }
+        if (n > 1) {
+            p.button("اختيار الأصوات الإضافية: " + TtsEngine.activeVoices().joinToString("، ")) { chooseExtraVoices(n) }
+        }
+        p.section("الترجمة")
+        p.check("الترجمة قبل التحويل مفعّلة (كل تحويل يترجم النص أولًا)", Store.ttsTranslateOn()) { v -> Store.setTtsTranslateOn(v) }
+        p.button("لغة الترجمة قبل التحويل: " + Prompts.LANGS[Store.ttsLang()].first) { chooseLang() }
+        p.button("نموذج الترجمة: " + trModelLabel()) { chooseTrModel() }
+        p.section("موسيقى ومؤثرات صوتية (مطر، بحر، طيور، أدعية، ومزج على ملف جاهز)")
+        p.check("مزج الموسيقى والمؤثرات مع الصوت عند كل تحويل", Store.fxOn()) { v -> Store.setFxOn(v) }
+        p.button("الموسيقى: " + Fx.musicLabel(Store.fxMusic())) { chooseFx("music") }
+        p.button("مؤثر البيئة الأول: " + Fx.ambLabel(Store.fxAmb1())) { chooseFx("amb1") }
+        p.button("مؤثر البيئة الثاني: " + Fx.ambLabel(Store.fxAmb2())) { chooseFx("amb2") }
+        p.button("كل إعدادات الموسيقى والمؤثرات (المستويات، المقدمة، الخاتمة، العينات، المزج)") { open("fx") }
+        p.section("المفاتيح والملفات")
         val g = if (Store.hasKey("gemini")) "موجود" else "مش موجود"
         val q = if (Store.hasKey("groq")) "موجود" else "مش موجود"
         p.button("المفاتيح: Gemini " + g + "، Groq " + q) { open("main") }
-        p.button("موسيقى ومؤثرات صوتية") { open("fx") }
-        p.button("إعدادات متقدمة") { open("ttsadv") }
+        p.button("إعادة تجربة نماذج Gemini اللي حصتها خلصت") {
+            Store.saveBad(HashMap<String, Long>())
+            Ui.toast(this, "تم مسح قائمة النماذج المتوقفة، هتتجرب كلها من جديد")
+        }
+        p.button("فتح الملف بتطبيق تاني") { openFileElsewhere() }
+        p.button("نسخ مسار الملف") {
+            val path = Session.lastAudioPath
+            if (path.isEmpty()) Ui.toast(this, "مفيش ملف صوتي لسه") else Ui.copy(this, path)
+        }
+        p.button("نسخ الترجمة") {
+            if (Session.lastTranslation.isEmpty()) Ui.toast(this, "مفيش ترجمة لسه") else Ui.copy(this, Session.lastTranslation)
+        }
+        p.button("حذف الملف المؤقت") { deleteTemp() }
         p.bottomButton("رجوع") { finish() }
     }
 
@@ -272,6 +309,13 @@ class SettingsActivity : Activity() {
         p.button("سرعة الكلام: " + Prompts.PACE[Store.ttsPace()].first) { choosePace() }
         p.button("نموذج الصوت: " + ttsModelLabel()) { chooseTtsModel() }
         p.button("لغة الترجمة قبل التحويل: " + Prompts.LANGS[Store.ttsLang()].first) { chooseLang() }
+        val nv = Store.nVoices()
+        p.button("عدد الأصوات: " + (if (nv <= 1) "صوت واحد" else nv.toString())) { chooseNVoices() }
+        p.button("توزيع الأصوات: " + mixNames[Store.mixMode()].substringBefore(" (")) { chooseMixMode() }
+        if (nv > 1) {
+            p.button("اختيار الأصوات الإضافية: " + TtsEngine.activeVoices().joinToString("، ")) { chooseExtraVoices(nv) }
+        }
+        p.button("موسيقى ومؤثرات صوتية (مطر، بحر، طيور، أدعية، ومزج على ملف جاهز)") { open("fx") }
         p.button("تجربة الصوت الحالي") { playSample() }
         p.button("سرعة القراءة بمحرك النظام وإعداداته") { open("reading") }
         p.bottomButton("رجوع") { finish() }
