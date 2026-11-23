@@ -226,11 +226,13 @@ object Speaker : TextToSpeech.OnInitListener {
 // ثم نبلّغ بالانتهاء. وعند الإيقاف اليدوي نخفض الصوت إلى صفر قبل التحرير.
 object AudioPlayer {
     private val handler = Handler(Looper.getMainLooper())
+    private val lock = Any()
     private var track: AudioTrack? = null
     @Volatile private var gen = 0
     @Volatile private var active = false
 
     private fun kill(tr: AudioTrack) {
+        try { tr.setVolume(0f) } catch (e: Exception) {}
         try { tr.pause() } catch (e: Exception) {}
         try { tr.flush() } catch (e: Exception) {}
         try { tr.release() } catch (e: Exception) {}
@@ -272,9 +274,12 @@ object AudioPlayer {
         } catch (e: Exception) {
             return false
         }
-        val my = ++gen
-        track = tr
-        active = true
+        val my: Int
+        synchronized(lock) {
+            my = ++gen
+            track = tr
+            active = true
+        }
         Thread {
             var finished = false
             try {
@@ -289,7 +294,7 @@ object AudioPlayer {
                 }
                 if (gen == my) active = false
                 val silence = ByteArray(chunk)
-                var left = rate * 2 * 800 / 1000
+                var left = (rate * 2 * 800) / 1000
                 while (left > 0 && gen == my) {
                     val n = minOf(chunk, left)
                     val w = tr.write(silence, 0, n)
@@ -304,9 +309,11 @@ object AudioPlayer {
             } catch (e: Exception) {
             }
             handler.post {
-                if (gen == my) {
-                    track = null
-                    active = false
+                synchronized(lock) {
+                    if (gen == my) {
+                        track = null
+                        active = false
+                    }
                 }
                 kill(tr)
                 if (finished && gen == my) onDone()
@@ -316,12 +323,17 @@ object AudioPlayer {
     }
 
     fun stop() {
-        gen++
-        active = false
-        val tr = track ?: return
-        track = null
-        try { tr.setVolume(0f) } catch (e: Exception) {}
-        handler.postDelayed({ kill(tr) }, 90)
+        val old: AudioTrack?
+        synchronized(lock) {
+            gen++
+            active = false
+            old = track
+            track = null
+        }
+        if (old != null) {
+            try { old.setVolume(0f) } catch (e: Exception) {}
+            kill(old)
+        }
     }
 
     fun isPlaying(): Boolean {
@@ -440,8 +452,8 @@ object TtsEngine {
     private fun scaleSample(b: ByteArray, idx: Int, g: Float) {
         val lo = b[idx * 2].toInt() and 0xFF
         val hi = b[idx * 2 + 1].toInt()
-        val s = (hi shl 8) or lo
-        val v = (s * g).toInt()
+        val s = ((hi shl 8) or lo).toShort().toInt()
+        val v = (s * g.coerceIn(0f, 1f)).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
         b[idx * 2] = (v and 0xFF).toByte()
         b[idx * 2 + 1] = ((v shr 8) and 0xFF).toByte()
     }
@@ -450,8 +462,8 @@ object TtsEngine {
         val n = pcm.size / 2
         if (n < 64) return pcm
         val out = pcm.copyOf(n * 2)
-        val fin = minOf(n / 2, rate * 20 / 1000)
-        val fout = minOf(n / 2, rate * 80 / 1000)
+        val fin = minOf(n / 2, rate * 25 / 1000)
+        val fout = minOf(n / 2, rate * 90 / 1000)
         for (i in 0 until fin) scaleSample(out, i, i.toFloat() / fin.toFloat())
         for (i in 0 until fout) scaleSample(out, n - 1 - i, i.toFloat() / fout.toFloat())
         return out
