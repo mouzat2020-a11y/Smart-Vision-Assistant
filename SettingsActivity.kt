@@ -8,6 +8,7 @@ import java.io.File
 import kotlin.concurrent.thread
 
 class SettingsActivity : Activity() {
+
     private var pageName = "main"
     private var keyField: EditText? = null
     private var modelField: EditText? = null
@@ -254,6 +255,12 @@ class SettingsActivity : Activity() {
         return if (Store.ttsEngine() == "system") "صوت النظام" else "Gemini"
     }
 
+    private fun ttsModelLabel(): String {
+        var mn = Store.ttsModel()
+        for (m in Prompts.TTS_MODELS) if (m.first == mn) mn = m.second
+        return mn
+    }
+
     private fun ttsVoicePage() {
         val p = Page(this, "إعدادات الصوت والقراءة")
         p.button("المحرك: " + engineLabel()) { chooseTtsEngine() }
@@ -263,6 +270,8 @@ class SettingsActivity : Activity() {
         p.button("الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first) { chooseEmotion() }
         p.button("اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first) { chooseAccent() }
         p.button("سرعة الكلام: " + Prompts.PACE[Store.ttsPace()].first) { choosePace() }
+        p.button("نموذج الصوت: " + ttsModelLabel()) { chooseTtsModel() }
+        p.button("لغة الترجمة قبل التحويل: " + Prompts.LANGS[Store.ttsLang()].first) { chooseLang() }
         p.button("تجربة الصوت الحالي") { playSample() }
         p.button("سرعة القراءة بمحرك النظام وإعداداته") { open("reading") }
         p.bottomButton("رجوع") { finish() }
@@ -293,9 +302,7 @@ class SettingsActivity : Activity() {
         if (n > 1) {
             p.button("اختيار الأصوات الإضافية: " + TtsEngine.activeVoices().joinToString("، ")) { chooseExtraVoices(n) }
         }
-        var mn = Store.ttsModel()
-        for (m in Prompts.TTS_MODELS) if (m.first == mn) mn = m.second
-        p.button("نموذج Gemini للصوت: " + mn) { chooseTtsModel() }
+        p.button("نموذج Gemini للصوت: " + ttsModelLabel()) { chooseTtsModel() }
         p.button("نموذج الترجمة: " + trModelLabel()) { chooseTrModel() }
         p.button("إعادة تجربة نماذج Gemini اللي حصتها خلصت") {
             Store.saveBad(HashMap<String, Long>())
