@@ -10,6 +10,8 @@ class ResultActivity : Activity() {
         Store.init(this)
         Speaker.init(this)
         val p = Page(this, Session.resultTitle)
+        // يحفظ النتيجة في السجل المحلي فقط لو المستخدم فعّل حفظ السجل من الخصوصية
+        if (savedInstanceState == null) History.add(Session.resultTitle, Session.resultText)
         val e = p.edit("النتيجة هنا، يمكنك تعديلها", Session.resultText, 8, false)
         p.button("استماع / إيقاف الاستماع") {
             if (Speaker.isSpeaking()) Speaker.stop() else Speaker.speak(e.text.toString())

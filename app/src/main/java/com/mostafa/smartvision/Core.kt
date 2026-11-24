@@ -126,6 +126,7 @@ object Store {
         val app = ctx.applicationContext
         holder = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
         vaultFile = File(app.noBackupFilesDir, "secure_keys.json")
+        History.init(app)
         migrate()
         moveKeys()
     }
@@ -264,6 +265,12 @@ object Store {
         vRemove("enc_" + p)
         prefs().edit().remove("enc_$p").apply()
     }
+
+    fun historyOn(): Boolean { return prefs().getBoolean("hist_on", false) }
+    fun setHistoryOn(v: Boolean) { prefs().edit().putBoolean("hist_on", v).apply() }
+
+    // يمسح إعدادات التطبيق العادية (النماذج والأصوات والخيارات). المفاتيح لها مسح مستقل
+    fun clearSettings(): Boolean { return prefs().edit().clear().commit() }
 
     fun model(p: String): String { return (prefs().getString("model_$p", "") ?: "").trim() }
     fun setModel(p: String, v: String) { prefs().edit().putString("model_$p", v.trim()).apply() }
@@ -411,6 +418,146 @@ object PlainText {
         "Write plain text titles, organized paragraphs, and use only normal punctuation such as the comma, the period and the question mark when needed. " +
         "Do not remove any important information and do not shorten the content unless the user asked for that. " +
         "Keep the same language as the request. If the task asks for an exact output format, exact text, or sound tags in angle brackets, keep that exactly."
+}
+
+
+// ================== سجل النتائج المحفوظ (اختياري، محلي فقط) ==================
+class HistItem(val id: Long, val title: String, val text: String)
+
+object History {
+    private var file: File? = null
+    private const val MAX = 200
+
+    fun init(ctx: Context) {
+        file = File(ctx.applicationContext.noBackupFilesDir, "history.json")
+    }
+
+    private fun readAll(): JSONArray {
+        try {
+            val f = file ?: return JSONArray()
+            if (!f.exists()) return JSONArray()
+            return JSONArray(f.readText(Charsets.UTF_8))
+        } catch (e: Exception) {
+            return JSONArray()
+        }
+    }
+
+    private fun writeAll(a: JSONArray): Boolean {
+        try {
+            val f = file ?: return false
+            val tmp = File(f.parentFile, f.name + ".tmp")
+            tmp.writeText(a.toString(), Charsets.UTF_8)
+            if (!tmp.renameTo(f)) {
+                tmp.delete()
+                return false
+            }
+            return true
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
+    // الأحدث أولًا
+    fun list(): List<HistItem> {
+        val a = readAll()
+        val out = ArrayList<HistItem>()
+        for (i in a.length() - 1 downTo 0) {
+            val o = a.optJSONObject(i) ?: continue
+            out.add(HistItem(o.optLong("id"), o.optString("t"), o.optString("x")))
+        }
+        return out
+    }
+
+    fun count(): Int { return readAll().length() }
+
+    // لا يحفظ شيئًا إلا لو المستخدم فعّل حفظ السجل
+    fun add(title: String, text: String) {
+        if (!Store.historyOn()) return
+        if (text.isBlank()) return
+        val a = readAll()
+        a.put(JSONObject().put("id", System.currentTimeMillis()).put("t", title).put("x", text))
+        if (a.length() > MAX) {
+            val n = JSONArray()
+            for (i in a.length() - MAX until a.length()) n.put(a.get(i))
+            writeAll(n)
+        } else {
+            writeAll(a)
+        }
+    }
+
+    fun remove(id: Long): Boolean {
+        val a = readAll()
+        val n = JSONArray()
+        var found = false
+        for (i in 0 until a.length()) {
+            val o = a.optJSONObject(i) ?: continue
+            if (o.optLong("id") == id) found = true else n.put(o)
+        }
+        if (!found) return false
+        return writeAll(n)
+    }
+
+    fun clear(): Boolean {
+        val f = file ?: return true
+        if (!f.exists()) return true
+        return f.delete()
+    }
+}
+
+// ================== مسح البيانات المحلية ==================
+object Privacy {
+    private fun listCache(ctx: Context, pick: (String) -> Boolean): List<File> {
+        val out = ArrayList<File>()
+        val fs = ctx.cacheDir.listFiles() ?: return out
+        for (f in fs) if (f.isFile && pick(f.name)) out.add(f)
+        return out
+    }
+
+    // صور مؤقتة أنشأها التطبيق داخل الـ cache فقط (لا تشمل صور المعرض)
+    fun imageFiles(ctx: Context): List<File> {
+        return listCache(ctx) { n -> n.startsWith("cam_") || n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png") }
+    }
+
+    // ملفات صوت مؤقتة داخل الـ cache فقط (لا تشمل ما حفظته في التنزيلات)
+    fun audioFiles(ctx: Context): List<File> {
+        return listCache(ctx) { n -> n.startsWith("tts_") || n.startsWith("sample") || n.startsWith("fx_") || n.endsWith(".wav") }
+    }
+
+    fun bytes(files: List<File>): Long {
+        var s = 0L
+        for (f in files) s += f.length()
+        return s
+    }
+
+    fun sizeText(b: Long): String {
+        if (b < 1024L) return b.toString() + " بايت"
+        if (b < 1048576L) return (b / 1024L).toString() + " كيلوبايت"
+        return String.format(java.util.Locale.US, "%.1f", b / 1048576.0) + " ميجابايت"
+    }
+
+    // يرجع (عدد ما حُذف، عدد ما تعذّر حذفه)
+    fun delete(files: List<File>): Pair<Int, Int> {
+        var ok = 0
+        var bad = 0
+        for (f in files) {
+            if (f.delete() || !f.exists()) ok++ else bad++
+        }
+        return Pair(ok, bad)
+    }
+
+    fun clearSession() {
+        Session.resultTitle = ""
+        Session.resultText = ""
+        Session.history = null
+        Session.repeatMode = ""
+        Session.repeatSource = ""
+        Session.repeatExtra = ""
+        Session.repeatLabel = ""
+        Session.lastAudioPath = ""
+        Session.lastDryPath = ""
+        Session.lastTranslation = ""
+        Session.lastSavedDesc = ""
+    }
 }
 
 // ================== الاتصال بالإنترنت ==================

@@ -1,6 +1,7 @@
 package com.mostafa.smartvision
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.widget.EditText
@@ -54,6 +55,9 @@ class SettingsActivity : Activity() {
             "ttsadv" -> ttsAdvPage()
             "fx" -> fxPage()
             "help" -> helpPage()
+            "privacy" -> privacyPage()
+            "history" -> historyPage()
+            "data" -> dataPage()
             else -> mainPage()
         }
     }
@@ -72,6 +76,7 @@ class SettingsActivity : Activity() {
         p.button("تعليمات وصف الصور") { open("describe") }
         p.button("القراءة الصوتية") { open("reading") }
         p.button("تحويل النص إلى صوت: الصوت والانفعال واللهجة") { open("tts") }
+        p.button("الخصوصية وإدارة البيانات") { open("privacy") }
         p.button("المساعدة وحول التطبيق") { open("help") }
         p.bottomButton("رجوع") { finish() }
     }
@@ -193,6 +198,186 @@ class SettingsActivity : Activity() {
                 }
             }
         }
+    }
+
+    // ---------------- الخصوصية وإدارة البيانات ----------------
+    private class OpResult(val name: String, val ok: Boolean, val detail: String)
+
+    private fun confirm(title: String, msg: String, yes: String, onYes: () -> Unit) {
+        AlertDialog.Builder(this).setTitle(title).setMessage(msg)
+            .setPositiveButton(yes) { _, _ -> onYes() }
+            .setNegativeButton("إلغاء", null)
+            .show()
+    }
+
+    // تقرير صادق: لا نقول "تم" لو جزء فشل
+    private fun report(results: List<OpResult>) {
+        val sb = StringBuilder()
+        var bad = 0
+        for (r in results) {
+            if (r.ok) sb.append("تم: ") else { sb.append("تعذّر: "); bad++ }
+            sb.append(r.name).append(". ").append(r.detail).append("\n")
+        }
+        if (bad > 0) sb.append("\nبعض العناصر لم تُمسح، جرّب مرة أخرى.")
+        Ui.message(this, if (bad == 0) "تم المسح" else "اكتمل المسح مع أخطاء", sb.toString().trim())
+        build()
+    }
+
+    private fun opImages(): OpResult {
+        val r = Privacy.delete(Privacy.imageFiles(this))
+        return OpResult("الصور المؤقتة", r.second == 0, "حُذف " + r.first + " ملف" + (if (r.second > 0) "، وتعذّر حذف " + r.second else ""))
+    }
+
+    private fun opAudio(): OpResult {
+        AudioPlayer.stop()
+        val r = Privacy.delete(Privacy.audioFiles(this))
+        if (r.second == 0) {
+            Session.lastAudioPath = ""
+            Session.lastDryPath = ""
+        }
+        return OpResult("ملفات الصوت المؤقتة", r.second == 0, "حُذف " + r.first + " ملف" + (if (r.second > 0) "، وتعذّر حذف " + r.second else ""))
+    }
+
+    private fun opSession(): OpResult {
+        Privacy.clearSession()
+        return OpResult("النتائج والترجمات المؤقتة في الذاكرة", true, "تم مسحها")
+    }
+
+    private fun opHistory(): OpResult {
+        val n = History.count()
+        val ok = History.clear()
+        return OpResult("سجل النتائج المحفوظ", ok, if (ok) "حُذف " + n + " نتيجة" else "تعذّر حذف ملف السجل")
+    }
+
+    private fun opKeys(): OpResult {
+        for (p in listOf("gemini", "groq", "openrouter")) Store.removeKey(p)
+        var left = 0
+        for (p in Store.PROVIDERS) if (Store.keyState(p) != 0) left++
+        return OpResult("مفاتيح API", left == 0, if (left == 0) "حُذفت كلها" else "تعذّر حذف " + left + " مفتاح")
+    }
+
+    private fun opSettings(): OpResult {
+        val ok = Store.clearSettings()
+        return OpResult("إعدادات التطبيق", ok, if (ok) "رجعت للوضع الافتراضي" else "تعذّر المسح")
+    }
+
+    private fun savedKeysText(): String {
+        val names = ArrayList<String>()
+        for (p in Store.PROVIDERS) if (Store.keyState(p) != 0) names.add(Store.pname(p))
+        return if (names.isEmpty()) "لا توجد مفاتيح محفوظة" else names.joinToString("، ")
+    }
+
+    private fun privacyPage() {
+        val p = Page(this, "الخصوصية وإدارة البيانات")
+        p.section("ماذا يُحفظ على جهازك")
+        p.text("مفاتيح API مشفّرة، وإعدادات التطبيق، وملفات مؤقتة مثل صور الكاميرا وملفات الصوت، وتبقى حتى تمسحها من إدارة البيانات. والنتائج لا تُحفظ إلا لو فعّلت حفظ السجل بنفسك.", 16f)
+        p.section("ماذا يُرسَل إلى الإنترنت")
+        p.text("عند وصف صورة أو الدردشة أو الكتابة أو الترجمة أو تحويل النص إلى صوت، تُرسَل الصورة أو النص إلى المزود الذي تستخدمه، Gemini أو Groq، ويعالجها المزود حسب سياسته. وعند الدردشة حول نتيجة تُرسَل معها النتيجة السابقة والصورة لأن الدردشة تحتاج السياق. التطبيق لا يرسل السجل القديم ولا صورك السابقة من تلقاء نفسه.", 16f)
+        p.section("ماذا يعمل بدون إنترنت")
+        p.text("القراءة بصوت النظام، وفتح النتائج المحفوظة في السجل، وإدارة الإعدادات والملفات. أما وصف الصور والدردشة والترجمة وأصوات Gemini فتحتاج إنترنت.", 16f)
+        p.text("التطبيق لا يستخدم إعلانات ولا أدوات تتبع ولا إحصاءات خارجية. والملفات التي تحفظها أنت في التنزيلات أو المعرض لا يمسحها التطبيق أبدًا.", 16f)
+        p.section("سجل النتائج")
+        p.check("حفظ سجل النتائج على الجهاز", Store.historyOn()) { v ->
+            Store.setHistoryOn(v)
+            Ui.toast(this, if (v) "تم تفعيل حفظ السجل. النتائج الجديدة تُحفظ على جهازك فقط" else "تم إيقاف حفظ السجل. ما حُفظ سابقًا يبقى حتى تحذفه")
+        }
+        p.label("مقفول افتراضيًا. لو فعّلته تُحفظ نصوص النتائج الجديدة على جهازك فقط، ولا تُرفع لأي مكان، ولا تُحفظ الصور. الدردشة الإضافية لا تُحفظ.")
+        p.button("عرض السجل المحفوظ (" + History.count() + " نتيجة)") { open("history") }
+        p.section("إدارة البيانات")
+        p.button("مسح البيانات وإدارة الملفات") { open("data") }
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private fun historyPage() {
+        val p = Page(this, "السجل المحفوظ")
+        val items = History.list()
+        if (items.isEmpty()) {
+            p.text("لا توجد نتائج محفوظة.", 17f)
+        } else {
+            p.label("عدد النتائج المحفوظة: " + items.size + ". اضغط على نتيجة لعرضها أو نسخها أو حذفها.")
+            for (h in items) {
+                val date = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(h.id))
+                val head = h.text.replace("\n", " ").take(40)
+                p.button(date + "، " + h.title + ": " + head) {
+                    Ui.choose(this, h.title, listOf("عرض النص كاملًا", "نسخ النص", "حذف هذه النتيجة", "إلغاء")) { i ->
+                        if (i == 0) {
+                            Ui.message(this, h.title, h.text)
+                        } else if (i == 1) {
+                            Ui.copy(this, h.text)
+                        } else if (i == 2) {
+                            confirm("حذف نتيجة", "هل تريد حذف هذه النتيجة من السجل؟", "نعم، احذف") {
+                                val ok = History.remove(h.id)
+                                Ui.toast(this, if (ok) "تم حذف النتيجة من السجل" else "تعذّر حذف النتيجة")
+                                build()
+                            }
+                        }
+                    }
+                }
+            }
+            p.button("حذف السجل كله") {
+                confirm("حذف السجل كله", "سيتم حذف " + items.size + " نتيجة محفوظة نهائيًا. لن يتأثر أي ملف حفظته في التنزيلات.", "نعم، احذف الكل") {
+                    report(listOf(opHistory()))
+                }
+            }
+        }
+        p.bottomButton("رجوع") { finish() }
+    }
+
+    private fun dataPage() {
+        val imgs = Privacy.imageFiles(this)
+        val aud = Privacy.audioFiles(this)
+        val hc = History.count()
+        val keysTxt = savedKeysText()
+        val imgInfo = imgs.size.toString() + " ملف، " + Privacy.sizeText(Privacy.bytes(imgs))
+        val audInfo = aud.size.toString() + " ملف، " + Privacy.sizeText(Privacy.bytes(aud))
+        val p = Page(this, "مسح البيانات وإدارة الملفات")
+        p.label("كل زر يطلب تأكيدًا قبل المسح، وبعده يخبرك بما حُذف وما تعذّر حذفه. الملفات التي حفظتها أنت في التنزيلات أو المعرض لا تُمسح أبدًا.")
+        p.section("مسح كل نوع على حدة")
+        p.button("مسح الصور المؤقتة (" + imgInfo + ")") {
+            confirm("مسح الصور المؤقتة", "سيتم مسح " + imgInfo + " من الصور المؤقتة التي أنشأها التطبيق. صور المعرض لا تتأثر.", "نعم، امسح") {
+                report(listOf(opImages()))
+            }
+        }
+        p.button("مسح ملفات الصوت المؤقتة (" + audInfo + ")") {
+            confirm("مسح ملفات الصوت المؤقتة", "سيتم مسح " + audInfo + " من ملفات الصوت المؤقتة، وسيتوقف أي تشغيل جارٍ. ما حفظته في التنزيلات لا يتأثر.", "نعم، امسح") {
+                report(listOf(opAudio()))
+            }
+        }
+        p.button("مسح النتائج والترجمات المؤقتة من الذاكرة") {
+            confirm("مسح النتائج المؤقتة", "سيتم مسح آخر نتيجة وآخر ترجمة ومحادثة الجلسة الحالية من الذاكرة.", "نعم، امسح") {
+                report(listOf(opSession()))
+            }
+        }
+        p.button("مسح سجل النتائج المحفوظ (" + hc + " نتيجة)") {
+            confirm("مسح السجل", "سيتم حذف " + hc + " نتيجة محفوظة نهائيًا.", "نعم، امسح") {
+                report(listOf(opHistory()))
+            }
+        }
+        p.button("حذف مفاتيح API المحفوظة (" + keysTxt + ")") {
+            confirm("حذف مفاتيح API", "سيتم حذف المفاتيح التالية: " + keysTxt + ". ستحتاج لإدخالها من جديد لتستخدم التطبيق.", "نعم، احذف المفاتيح") {
+                report(listOf(opKeys()))
+            }
+        }
+        p.button("مسح إعدادات التطبيق (النماذج والأصوات والخيارات)") {
+            confirm("مسح الإعدادات", "ستعود إعدادات التطبيق للوضع الافتراضي: النماذج والأصوات والموسيقى وباقي الخيارات. المفاتيح لا تتأثر بهذا الزر.", "نعم، امسح") {
+                report(listOf(opSettings()))
+            }
+        }
+        p.section("مسح الكل")
+        p.button("مسح بيانات التطبيق المحلية كلها") {
+            val msg = "سيتم مسح الآتي:\n" +
+                "الصور المؤقتة: " + imgInfo + "\n" +
+                "ملفات الصوت المؤقتة: " + audInfo + "\n" +
+                "النتائج والترجمات المؤقتة في الذاكرة\n" +
+                "سجل النتائج المحفوظ: " + hc + " نتيجة\n" +
+                "مفاتيح API: " + keysTxt + "\n" +
+                "إعدادات التطبيق\n\n" +
+                "لن يُمسح: أي ملف حفظته أنت في التنزيلات أو المعرض."
+            confirm("مسح بيانات التطبيق المحلية", msg, "نعم، امسح كل ذلك") {
+                report(listOf(opImages(), opAudio(), opSession(), opHistory(), opKeys(), opSettings()))
+            }
+        }
+        p.bottomButton("رجوع") { finish() }
     }
 
     // ---------------- تعليمات الوصف ----------------
