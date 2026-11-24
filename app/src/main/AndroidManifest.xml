@@ -12,6 +12,7 @@
     <application
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:label="المساعد البصري الذكي"
+        android:icon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:usesCleartextTraffic="false">
         <activity
