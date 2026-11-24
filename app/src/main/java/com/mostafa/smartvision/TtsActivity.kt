@@ -159,6 +159,11 @@ class TtsActivity : Activity() {
                 post(my, "تعذر التحويل: " + (out.error ?: ""))
                 return@thread
             }
+            val pcmBad = AudioCheck.pcm(pcm, out.rate)
+            if (pcmBad != null) {
+                post(my, "تعذر التحويل: " + pcmBad)
+                return@thread
+            }
             try {
                 val stamp = Files.stamp()
                 val dry = File(cacheDir, "tts_dry_" + stamp + ".wav")
@@ -171,6 +176,11 @@ class TtsActivity : Activity() {
                     val mf = File(cacheDir, "tts_mix_" + stamp + ".wav")
                     mf.writeBytes(TtsEngine.wav(mixed, out.rate))
                     finalPath = mf.absolutePath
+                }
+                val fileBad = AudioCheck.wavFile(File(finalPath))
+                if (fileBad != null) {
+                    post(my, fileBad)
+                    return@thread
                 }
                 val fp = finalPath
                 runOnUiThread {
@@ -193,14 +203,14 @@ class TtsActivity : Activity() {
         val path = Session.lastAudioPath
         if (path.isEmpty()) return null
         val f = File(path)
-        if (!f.exists()) return null
+        if (AudioCheck.wavFile(f) != null) return null
         return f.readBytes()
     }
 
     private fun saveAudio() {
         val b = audioBytes()
         if (b == null) {
-            Ui.toast(this, "لا يوجد ملف صوتي بعد")
+            Ui.toast(this, "لا يوجد ملف صوتي سليم بعد، أعد التحويل")
             return
         }
         val name = "SmartVision_" + Files.stamp() + ".wav"
@@ -216,7 +226,7 @@ class TtsActivity : Activity() {
     private fun shareAudio() {
         val b = audioBytes()
         if (b == null) {
-            Ui.toast(this, "لا يوجد ملف صوتي بعد")
+            Ui.toast(this, "لا يوجد ملف صوتي سليم بعد، أعد التحويل")
             return
         }
         val uri = Files.insertDownload(this, "SmartVision_" + Files.stamp() + ".wav", "audio/wav", b)

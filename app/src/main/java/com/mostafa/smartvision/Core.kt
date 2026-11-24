@@ -127,6 +127,8 @@ object Store {
         holder = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
         vaultFile = File(app.noBackupFilesDir, "secure_keys.json")
         History.init(app)
+        Net.init(app)
+        Usage.init(app)
         migrate()
         moveKeys()
     }
@@ -270,7 +272,10 @@ object Store {
     fun setHistoryOn(v: Boolean) { prefs().edit().putBoolean("hist_on", v).apply() }
 
     // يمسح إعدادات التطبيق العادية (النماذج والأصوات والخيارات). المفاتيح لها مسح مستقل
-    fun clearSettings(): Boolean { return prefs().edit().clear().commit() }
+    fun clearSettings(): Boolean {
+        Usage.reset()
+        return prefs().edit().clear().commit()
+    }
 
     fun model(p: String): String { return (prefs().getString("model_$p", "") ?: "").trim() }
     fun setModel(p: String, v: String) { prefs().edit().putString("model_$p", v.trim()).apply() }
@@ -560,6 +565,148 @@ object Privacy {
     }
 }
 
+// ================== حالة الإنترنت ==================
+object Net {
+    private var cm: android.net.ConnectivityManager? = null
+
+    fun init(ctx: Context) {
+        if (cm == null) cm = ctx.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+    }
+
+    private fun probe(): Boolean? {
+        val m = cm ?: return null
+        val n = m.activeNetwork ?: return false
+        val c = m.getNetworkCapabilities(n) ?: return false
+        return c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    // true لو فيه شبكة نشطة تدعم الإنترنت. لو تعذّر الفحص نفترض وجود اتصال ونترك الطلب يحاول
+    fun isOnline(): Boolean {
+        try {
+            var r = probe() ?: return true
+            if (!r) {
+                // قد تكون الشبكة تتبدل لحظيًا (واي فاي إلى بيانات)، فنعيد الفحص مرة واحدة
+                Thread.sleep(400)
+                r = probe() ?: return true
+            }
+            return r
+        } catch (e: Exception) {
+            return true
+        }
+    }
+}
+
+// ================== عدّاد الاستخدام المحلي ==================
+class UsageRow(val label: String, val todayOk: Int, val todayFail: Int, val allOk: Int, val allFail: Int)
+
+object Usage {
+    private var sp: SharedPreferences? = null
+    private val KINDS = listOf("gemini", "groq", "tts", "openrouter")
+
+    fun init(ctx: Context) {
+        sp = ctx.applicationContext.getSharedPreferences("usage", Context.MODE_PRIVATE)
+    }
+
+    private fun today(): String {
+        return java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date())
+    }
+
+    // يحسب كل طلب شبكة فعلي أُرسل (يشمل إعادة المحاولة والمحاولات المتوازية). لا يحفظ أي نص أو صورة
+    @Synchronized
+    fun record(kind: String, ok: Boolean) {
+        val p = sp ?: return
+        if (!KINDS.contains(kind)) return
+        val e = p.edit()
+        val d = today()
+        val changed = p.getString("day", "") != d
+        if (changed) {
+            for (k in KINDS) {
+                e.putInt("t_" + k + "_ok", 0)
+                e.putInt("t_" + k + "_fail", 0)
+            }
+            e.putString("day", d)
+        }
+        val sfx = if (ok) "ok" else "fail"
+        val tk = "t_" + kind + "_" + sfx
+        val ak = "a_" + kind + "_" + sfx
+        e.putInt(tk, (if (changed) 0 else p.getInt(tk, 0)) + 1)
+        e.putInt(ak, p.getInt(ak, 0) + 1)
+        e.apply()
+    }
+
+    private fun labelOf(k: String): String {
+        return when (k) {
+            "gemini" -> "Gemini (وصف ودردشة وكتابة وترجمة)"
+            "groq" -> "Groq"
+            "tts" -> "أصوات Gemini (تحويل النص إلى صوت)"
+            else -> "OpenRouter"
+        }
+    }
+
+    @Synchronized
+    fun rows(): List<UsageRow> {
+        val p = sp ?: return ArrayList()
+        val same = p.getString("day", "") == today()
+        val out = ArrayList<UsageRow>()
+        for (k in KINDS) {
+            val ao = p.getInt("a_" + k + "_ok", 0)
+            val af = p.getInt("a_" + k + "_fail", 0)
+            if (k == "openrouter" && ao + af == 0) continue
+            val to = if (same) p.getInt("t_" + k + "_ok", 0) else 0
+            val tf = if (same) p.getInt("t_" + k + "_fail", 0) else 0
+            out.add(UsageRow(labelOf(k), to, tf, ao, af))
+        }
+        return out
+    }
+
+    @Synchronized
+    fun total(): Int {
+        var n = 0
+        for (r in rows()) n += r.allOk + r.allFail
+        return n
+    }
+
+    @Synchronized
+    fun reset() {
+        sp?.edit()?.clear()?.apply()
+    }
+}
+
+// ================== فحص الصوت الناتج ==================
+object AudioCheck {
+    // يفحص صوت PCM (16 بت، قناة واحدة) قبل الحفظ والتشغيل. يرجع نص المشكلة أو null لو سليم
+    fun pcm(pcm: ByteArray, rate: Int): String? {
+        if (rate <= 0) return "معدل الصوت الناتج غير صالح"
+        val n = pcm.size / 2
+        if (n == 0) return "الصوت الناتج فاضي"
+        if (n.toDouble() / rate < 0.15) return "الصوت الناتج قصير جدًا، جرّب مرة أخرى"
+        var peak = 0
+        for (i in 0 until n) {
+            val lo = pcm[i * 2].toInt() and 0xFF
+            val hi = pcm[i * 2 + 1].toInt()
+            var v = (hi shl 8) or lo
+            if (v < 0) v = -v
+            if (v > peak) peak = v
+        }
+        if (peak < 200) return "الصوت الناتج صامت تقريبًا، جرّب مرة أخرى"
+        return null
+    }
+
+    // ملف WAV على القرص: موجود وله ترويسة RIFF وحجم معقول
+    fun wavFile(f: File): String? {
+        if (!f.exists()) return "الملف الصوتي غير موجود، أعد التحويل"
+        if (f.length() < 1000L) return "الملف الصوتي تالف أو فاضي، أعد التحويل"
+        try {
+            val h = ByteArray(4)
+            f.inputStream().use { it.read(h) }
+            if (String(h, Charsets.US_ASCII) != "RIFF") return "الملف الصوتي تالف، أعد التحويل"
+        } catch (e: Exception) {
+            return "تعذّرت قراءة الملف الصوتي"
+        }
+        return null
+    }
+}
+
 // ================== الاتصال بالإنترنت ==================
 class HttpResult(val code: Int, val body: String)
 
@@ -594,10 +741,20 @@ object Http {
         return t
     }
 
+    private fun kindOf(url: String): String {
+        if (url.contains("generativelanguage.googleapis.com")) return if (url.contains("tts", true)) "tts" else "gemini"
+        if (url.contains("api.groq.com")) return "groq"
+        if (url.contains("openrouter.ai")) return "openrouter"
+        return "other"
+    }
+
     // أكواد خاصة: -1 لا يوجد اتصال، -2 إلغاء المستخدم، -3 انتهت المهلة
     fun post(url: String, body: String, headers: Map<String, String>, readMs: Int): HttpResult {
         if (!url.startsWith("https://")) return HttpResult(-1, "تم رفض الاتصال لأنه غير مشفّر")
         val secrets = secretsOf(headers)
+        val kind = kindOf(url)
+        // بدون إنترنت: نرجع فورًا بدل انتظار مهلة الاتصال
+        if (!Net.isOnline()) return HttpResult(-1, "offline")
         val gen = cancelGen
         var conn: HttpURLConnection? = null
         try {
@@ -615,9 +772,11 @@ object Http {
             val code = c.responseCode
             val stream = if (code in 200..299) c.inputStream else c.errorStream
             val text = if (stream == null) "" else stream.bufferedReader().use { it.readText() }
+            Usage.record(kind, code in 200..299)
             return HttpResult(code, if (code in 200..299) text else scrub(text, secrets))
         } catch (e: Exception) {
             if (cancelGen != gen) return HttpResult(-2, "cancelled")
+            Usage.record(kind, false)
             if (e is java.net.SocketTimeoutException) return HttpResult(-3, "timeout")
             return HttpResult(-1, scrub(e.message ?: e.javaClass.simpleName, secrets))
         } finally {
@@ -636,6 +795,7 @@ object Errors {
         if (code == -2) return "تم إلغاء العملية."
         if (code == -3) return "انتهت مهلة الاتصال: السيرفر تأخر في الرد. جرّب مرة أخرى أو غيّر النموذج."
         if (code == -1) {
+            if (body == "offline") return "لا يوجد اتصال بالإنترنت الآن. وصف الصور والدردشة والترجمة وأصوات Gemini تحتاج إنترنت. أما القراءة بصوت النظام وفتح السجل المحفوظ وإدارة الإعدادات والملفات فتشتغل بدون إنترنت."
             if (body.contains("غير مشفّر")) return body
             return "تعذّر الاتصال بالإنترنت. تأكد من الشبكة وجرّب مرة أخرى."
         }
