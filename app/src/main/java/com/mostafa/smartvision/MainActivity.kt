@@ -39,6 +39,10 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
+        // نغمة قصيرة عند فتح التطبيق من أيقونته فقط (لا عند الرجوع للرئيسية من داخل التطبيق ولا عند تدوير الشاشة)
+        if (savedInstanceState == null && intent != null && Intent.ACTION_MAIN == intent.action && intent.hasCategory(Intent.CATEGORY_LAUNCHER)) {
+            Chime.play()
+        }
         Speaker.init(this)
         build()
         handleShare(intent)

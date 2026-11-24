@@ -283,6 +283,9 @@ object Store {
     fun cross(): Boolean { return prefs().getBoolean("cross", true) }
     fun setCross(v: Boolean) { prefs().edit().putBoolean("cross", v).apply() }
 
+    fun chimeOn(): Boolean { return prefs().getBoolean("chime_on", true) }
+    fun setChimeOn(v: Boolean) { prefs().edit().putBoolean("chime_on", v).apply() }
+
     fun autoSpeak(): Boolean { return prefs().getBoolean("auto", true) }
     fun setAutoSpeak(v: Boolean) { prefs().edit().putBoolean("auto", v).apply() }
 
@@ -562,6 +565,74 @@ object Privacy {
         Session.lastDryPath = ""
         Session.lastTranslation = ""
         Session.lastSavedDesc = ""
+    }
+}
+
+// ================== نغمة فتح التطبيق ==================
+object Chime {
+    // يشغّل النغمة في خيط جانبي، فلا يؤخر فتح التطبيق. لو المستخدم أوقفها من الإعدادات لا يشغّل شيئًا
+    fun play() {
+        if (!Store.chimeOn()) return
+        Thread { render() }.start()
+    }
+
+    // معاينة عند تفعيل الخيار من الإعدادات
+    fun preview() {
+        Thread { render() }.start()
+    }
+
+    // ثلاث نغمات صاعدة (دو مي صول) بصوت ناعم يخفت تدريجيًا، تُولَّد بالكود بدون أي ملف صوت
+    private fun render() {
+        var track: android.media.AudioTrack? = null
+        try {
+            val rate = 22050
+            val notes = doubleArrayOf(523.25, 659.25, 783.99)
+            val starts = doubleArrayOf(0.0, 0.13, 0.26)
+            val n = rate
+            val mix = DoubleArray(n)
+            for (k in notes.indices) {
+                val s0 = (starts[k] * rate).toInt()
+                for (i in 0 until (n - s0)) {
+                    val t = i.toDouble() / rate
+                    val att = if (t < 0.01) t / 0.01 else 1.0
+                    val env = att * Math.exp(-t * 5.0)
+                    val w = Math.sin(2.0 * Math.PI * notes[k] * t) + 0.25 * Math.sin(4.0 * Math.PI * notes[k] * t)
+                    mix[s0 + i] += w * env * 0.22
+                }
+            }
+            val pcm = ShortArray(n)
+            val fade = rate / 30
+            for (i in 0 until n) {
+                var v = mix[i]
+                if (i > n - fade) v *= (n - i).toDouble() / fade
+                if (v > 1.0) v = 1.0
+                if (v < -1.0) v = -1.0
+                pcm[i] = (v * 30000.0).toInt().toShort()
+            }
+            val attrs = android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            val fmt = android.media.AudioFormat.Builder()
+                .setSampleRate(rate)
+                .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
+                .build()
+            val tr = android.media.AudioTrack.Builder()
+                .setAudioAttributes(attrs)
+                .setAudioFormat(fmt)
+                .setBufferSizeInBytes(pcm.size * 2)
+                .setTransferMode(android.media.AudioTrack.MODE_STATIC)
+                .build()
+            track = tr
+            tr.write(pcm, 0, pcm.size)
+            tr.play()
+            Thread.sleep(1300)
+        } catch (e: Exception) {
+            // النغمة اختيارية: أي فشل فيها لا يؤثر على التطبيق
+        } finally {
+            try { track?.release() } catch (e: Exception) { }
+        }
     }
 }
 

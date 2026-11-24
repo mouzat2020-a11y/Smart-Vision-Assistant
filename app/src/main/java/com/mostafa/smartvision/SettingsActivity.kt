@@ -74,6 +74,10 @@ class SettingsActivity : Activity() {
         }
         p.check("التبديل التلقائي لمزود آخر عند فشل الأساسي", Store.cross()) { v -> Store.setCross(v) }
         p.section("خيارات التطبيق")
+        p.check("نغمة عند فتح التطبيق", Store.chimeOn()) { v ->
+            Store.setChimeOn(v)
+            if (v) Chime.preview()
+        }
         p.button("تعليمات وصف الصور") { open("describe") }
         p.button("القراءة الصوتية") { open("reading") }
         p.button("تحويل النص إلى صوت: الصوت والانفعال واللهجة") { open("tts") }
