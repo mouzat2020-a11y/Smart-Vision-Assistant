@@ -564,6 +564,18 @@ object Privacy {
 class HttpResult(val code: Int, val body: String)
 
 object Http {
+    private val live = HashSet<HttpURLConnection>()
+    @Volatile private var cancelGen = 0
+
+    // يقطع كل الاتصالات الجارية فورًا (زر الإلغاء أو الخروج من الشاشة)
+    fun cancelAll() {
+        cancelGen++
+        val copy = synchronized(live) { ArrayList(live) }
+        for (c in copy) {
+            try { c.disconnect() } catch (e: Exception) { }
+        }
+    }
+
     // أسرار الترويسات (مفتاح Gemini أو Authorization) لإخفائها من أي نص خطأ
     private fun secretsOf(headers: Map<String, String>): List<String> {
         val out = ArrayList<String>()
@@ -582,25 +594,59 @@ object Http {
         return t
     }
 
+    // أكواد خاصة: -1 لا يوجد اتصال، -2 إلغاء المستخدم، -3 انتهت المهلة
     fun post(url: String, body: String, headers: Map<String, String>, readMs: Int): HttpResult {
         if (!url.startsWith("https://")) return HttpResult(-1, "تم رفض الاتصال لأنه غير مشفّر")
         val secrets = secretsOf(headers)
+        val gen = cancelGen
+        var conn: HttpURLConnection? = null
         try {
-            val conn = URL(url).openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.connectTimeout = 10000
-            conn.readTimeout = readMs
-            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            for ((k, v) in headers) conn.setRequestProperty(k, v)
-            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val c = URL(url).openConnection() as HttpURLConnection
+            conn = c
+            synchronized(live) { live.add(c) }
+            if (cancelGen != gen) return HttpResult(-2, "cancelled")
+            c.requestMethod = "POST"
+            c.doOutput = true
+            c.connectTimeout = 10000
+            c.readTimeout = readMs
+            c.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            for ((k, v) in headers) c.setRequestProperty(k, v)
+            c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val code = c.responseCode
+            val stream = if (code in 200..299) c.inputStream else c.errorStream
             val text = if (stream == null) "" else stream.bufferedReader().use { it.readText() }
             return HttpResult(code, if (code in 200..299) text else scrub(text, secrets))
         } catch (e: Exception) {
+            if (cancelGen != gen) return HttpResult(-2, "cancelled")
+            if (e is java.net.SocketTimeoutException) return HttpResult(-3, "timeout")
             return HttpResult(-1, scrub(e.message ?: e.javaClass.simpleName, secrets))
+        } finally {
+            val c2 = conn
+            if (c2 != null) {
+                synchronized(live) { live.remove(c2) }
+                try { c2.disconnect() } catch (e: Exception) { }
+            }
         }
+    }
+}
+
+// رسائل أخطاء موحّدة للشبكة وأخطاء السيرفر العامة (تُستخدم في كل المزودين والصوت)
+object Errors {
+    fun net(code: Int, body: String): String? {
+        if (code == -2) return "تم إلغاء العملية."
+        if (code == -3) return "انتهت مهلة الاتصال: السيرفر تأخر في الرد. جرّب مرة أخرى أو غيّر النموذج."
+        if (code == -1) {
+            if (body.contains("غير مشفّر")) return body
+            return "تعذّر الاتصال بالإنترنت. تأكد من الشبكة وجرّب مرة أخرى."
+        }
+        return null
+    }
+
+    fun http(code: Int, who: String): String? {
+        if (code == 404) return "النموذج غير متاح عند " + who + " الآن. جرّب نموذجًا آخر من الإعدادات."
+        if (code == 413) return "حجم الطلب كبير على " + who + ". جرّب صورة أصغر أو نصًا أقصر."
+        if (code == 500 || code == 502 || code == 503 || code == 504) return "سيرفر " + who + " مشغول أو متوقف مؤقتًا. جرّب بعد قليل."
+        return null
     }
 }
 
@@ -772,7 +818,10 @@ object Ai {
         if (code == 400 && msg.contains("API key", true)) return "مفتاح Gemini غير صحيح. راجع المفتاح من الإعدادات."
         if (code == 403) return "المفتاح مرفوض أو لا توجد صلاحية. (" + msg.take(150) + ")"
         if (code == 429) return "الحصة المجانية لهذا النموذج انتهت الآن. جرّب بعد قليل أو غيّر النموذج."
-        if (code == -1) return "تعذر الاتصال بالإنترنت: " + msg.take(120)
+        val n = Errors.net(code, body)
+        if (n != null) return n
+        val hx = Errors.http(code, "Gemini")
+        if (hx != null) return hx
         return "خطأ " + code + " من Gemini: " + msg.take(200)
     }
 
@@ -846,6 +895,10 @@ object Ai {
                     } else {
                         Verdict(1, "النموذج أرجع ردًا فارغًا (ربما حُجبت الصورة لأسباب الأمان).")
                     }
+                } else if (r.code == -1 || r.code == -2) {
+                    Verdict(2, geminiFriendly(r.code, r.body))
+                } else if (r.code == -3) {
+                    Verdict(1, geminiFriendly(r.code, r.body))
                 } else if (r.code == 401 || (r.code == 400 && errMessage(r.body).contains("API key", true))) {
                     Verdict(2, geminiFriendly(r.code, r.body))
                 } else {
@@ -929,7 +982,10 @@ object Ai {
         }
         if (code == 402) return "رصيد حساب " + nm + " انتهى أو يحتاج شحنًا. (" + msg.take(120) + ")"
         if (code == 429) return "حصة " + nm + " تجاوزت الحد الآن. جرّب بعد قليل أو غيّر النموذج أو المزود."
-        if (code == -1) return "تعذر الاتصال بالإنترنت: " + msg.take(120)
+        val n = Errors.net(code, body)
+        if (n != null) return n
+        val hx = Errors.http(code, nm)
+        if (hx != null) return hx
         return "خطأ " + code + " من " + nm + ": " + msg.take(200)
     }
 
@@ -957,6 +1013,8 @@ object Ai {
                 if (r.code == 200) {
                     val t = extractOpenAi(r.body)
                     if (t.isNotEmpty()) Verdict(0, t) else Verdict(1, "النموذج أرجع ردًا فارغًا.")
+                } else if (r.code == -1 || r.code == -2) {
+                    Verdict(2, openAiFriendly(p, r.code, r.body))
                 } else if (r.code == 401 || r.code == 402 || r.code == 403 ||
                     (r.code == 400 && errMessage(r.body).contains("api key", true))) {
                     Verdict(2, openAiFriendly(p, r.code, r.body))

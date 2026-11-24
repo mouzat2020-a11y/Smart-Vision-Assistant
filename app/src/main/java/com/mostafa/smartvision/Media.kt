@@ -6,9 +6,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioTrack
 import android.media.ExifInterface
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -221,123 +220,60 @@ object Speaker : TextToSpeech.OnInitListener {
 }
 
 // ================== تشغيل ملف صوتي ==================
-// تشغيل مباشر بـ AudioTrack بدل MediaPlayer. بعد انتهاء الكلام نكتب صمتًا قصيرًا
-// حتى يبقى مسار الصوت مفتوحًا ثم يُغلق بهدوء (يقلل الفرقعة عند إغلاق الصوت)،
-// ثم نبلّغ بالانتهاء. وعند الإيقاف اليدوي نخفض الصوت إلى صفر قبل التحرير.
+// علاج الفرقعة: عند انتهاء الملف لا نقطع المشغّل ولا نستدعي onDone فورًا،
+// بل ننتظر لحظة حتى يُغلق مسار الصوت بهدوء، ثم نحرره، وبعدها فقط نبلّغ بالانتهاء
+// (حتى لا يبدأ قارئ الشاشة بنطق "انتهى التشغيل" في نفس لحظة إغلاق الصوت).
+// وعند الإيقاف اليدوي نخفض الصوت إلى صفر أولًا ثم نحرر المشغّل بعد جزء من الثانية.
 object AudioPlayer {
+    private var player: MediaPlayer? = null
     private val handler = Handler(Looper.getMainLooper())
-    private val lock = Any()
-    private var track: AudioTrack? = null
-    @Volatile private var gen = 0
-    @Volatile private var active = false
 
-    private fun kill(tr: AudioTrack) {
-        try { tr.setVolume(0f) } catch (e: Exception) {}
-        try { tr.pause() } catch (e: Exception) {}
-        try { tr.flush() } catch (e: Exception) {}
-        try { tr.release() } catch (e: Exception) {}
+    private fun release(mp: MediaPlayer) {
+        try { mp.stop() } catch (e: Exception) {}
+        try { mp.release() } catch (e: Exception) {}
     }
 
     fun play(path: String, onDone: () -> Unit): Boolean {
         stop()
-        val bytes: ByteArray
         try {
-            bytes = File(path).readBytes()
-        } catch (e: Exception) {
-            return false
-        }
-        if (bytes.size <= 44) return false
-        val rate = ByteBuffer.wrap(bytes, 24, 4).order(ByteOrder.LITTLE_ENDIAN).int
-        if (rate < 8000 || rate > 48000) return false
-        val pcm = bytes.copyOfRange(44, bytes.size)
-        val minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        if (minBuf <= 0) return false
-        val tr: AudioTrack
-        try {
-            tr = AudioTrack.Builder()
-                .setAudioAttributes(
+            val mp = MediaPlayer()
+            try {
+                mp.setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setSampleRate(rate)
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build()
-                )
-                .setBufferSizeInBytes(minBuf * 2)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
+            } catch (e: Exception) {
+            }
+            mp.setDataSource(path)
+            mp.setOnCompletionListener {
+                handler.postDelayed({
+                    if (player === mp) {
+                        player = null
+                        release(mp)
+                        onDone()
+                    }
+                }, 450)
+            }
+            mp.prepare()
+            mp.start()
+            player = mp
+            return true
         } catch (e: Exception) {
             return false
         }
-        val my: Int
-        synchronized(lock) {
-            my = ++gen
-            track = tr
-            active = true
-        }
-        Thread {
-            var finished = false
-            try {
-                tr.play()
-                val chunk = 4096
-                var off = 0
-                while (off < pcm.size && gen == my) {
-                    val n = minOf(chunk, pcm.size - off)
-                    val w = tr.write(pcm, off, n)
-                    if (w <= 0) break
-                    off += w
-                }
-                if (gen == my) active = false
-                val silence = ByteArray(chunk)
-                var left = (rate * 2 * 800) / 1000
-                while (left > 0 && gen == my) {
-                    val n = minOf(chunk, left)
-                    val w = tr.write(silence, 0, n)
-                    if (w <= 0) break
-                    left -= w
-                }
-                finished = (gen == my)
-                if (finished) {
-                    try { tr.stop() } catch (e: Exception) {}
-                    Thread.sleep(400)
-                }
-            } catch (e: Exception) {
-            }
-            handler.post {
-                synchronized(lock) {
-                    if (gen == my) {
-                        track = null
-                        active = false
-                    }
-                }
-                kill(tr)
-                if (finished && gen == my) onDone()
-            }
-        }.start()
-        return true
     }
 
     fun stop() {
-        val old: AudioTrack?
-        synchronized(lock) {
-            gen++
-            active = false
-            old = track
-            track = null
-        }
-        if (old != null) {
-            try { old.setVolume(0f) } catch (e: Exception) {}
-            kill(old)
-        }
+        val mp = player ?: return
+        player = null
+        try { mp.setVolume(0f, 0f) } catch (e: Exception) {}
+        handler.postDelayed({ release(mp) }, 90)
     }
 
     fun isPlaying(): Boolean {
-        return active
+        return try { player?.isPlaying ?: false } catch (e: Exception) { false }
     }
 }
 
@@ -366,7 +302,10 @@ object TtsEngine {
         }
         if (code == 429) return "حصة نماذج الصوت انتهت الآن. جرّب بعد قليل أو غيّر نموذج الصوت من الإعدادات."
         if (code == 403 || code == 401) return "مفتاح Gemini مرفوض. راجعه من الإعدادات. (" + msg.take(100) + ")"
-        if (code == -1) return "تعذر الاتصال بالإنترنت: " + msg.take(120)
+        val n = Errors.net(code, body)
+        if (n != null) return n
+        val hx = Errors.http(code, "Gemini")
+        if (hx != null) return hx
         return "خطأ " + code + ": " + msg.take(200)
     }
 
@@ -439,7 +378,7 @@ object TtsEngine {
                 val out = extract(r.body)
                 if (out != null) return out
                 lastErr = "النموذج لم يرجع صوتًا. جرّب نصًا أو انفعالًا آخر."
-            } else if (r.code == 401 || r.code == 403) {
+            } else if (r.code == 401 || r.code == 403 || r.code == -1 || r.code == -2) {
                 return TtsOut(null, 0, friendly(r.code, r.body))
             } else {
                 lastErr = friendly(r.code, r.body)
@@ -452,8 +391,8 @@ object TtsEngine {
     private fun scaleSample(b: ByteArray, idx: Int, g: Float) {
         val lo = b[idx * 2].toInt() and 0xFF
         val hi = b[idx * 2 + 1].toInt()
-        val s = ((hi shl 8) or lo).toShort().toInt()
-        val v = (s * g.coerceIn(0f, 1f)).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+        val s = (hi shl 8) or lo
+        val v = (s * g).toInt()
         b[idx * 2] = (v and 0xFF).toByte()
         b[idx * 2 + 1] = ((v shr 8) and 0xFF).toByte()
     }
@@ -462,8 +401,8 @@ object TtsEngine {
         val n = pcm.size / 2
         if (n < 64) return pcm
         val out = pcm.copyOf(n * 2)
-        val fin = minOf(n / 2, rate * 25 / 1000)
-        val fout = minOf(n / 2, rate * 90 / 1000)
+        val fin = minOf(n / 2, rate * 20 / 1000)
+        val fout = minOf(n / 2, rate * 80 / 1000)
         for (i in 0 until fin) scaleSample(out, i, i.toFloat() / fin.toFloat())
         for (i in 0 until fout) scaleSample(out, n - 1 - i, i.toFloat() / fout.toFloat())
         return out

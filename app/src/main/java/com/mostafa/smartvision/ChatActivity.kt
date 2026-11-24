@@ -6,6 +6,7 @@ import kotlin.concurrent.thread
 
 class ChatActivity : Activity() {
     private var sending = false
+    private var token = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -20,8 +21,8 @@ class ChatActivity : Activity() {
         val log = p.text("آخر نتيجة:\n" + Session.resultText, 16f)
         log.setTextIsSelectable(true)
         Ui.live(log)
-        val e = p.edit("اكتب سؤالك...", "", 2, false)
-        p.button("إرسال") {
+        val e = p.pinnedEdit("اكتب سؤالك...", "")
+        p.pinnedButton("إرسال") {
             val q = e.text.toString().trim()
             if (sending) {
                 Ui.toast(this, "انتظر الرد الحالي")
@@ -29,12 +30,15 @@ class ChatActivity : Activity() {
                 Ui.toast(this, "اكتب سؤالًا أولًا")
             } else {
                 sending = true
+                token++
+                val my = token
                 e.setText("")
                 log.text = "جاري الرد..."
                 hist.add(Msg("user", q))
                 thread {
-                    val r = Ai.ask(hist, { false }, { })
+                    val r = Ai.ask(hist, { my != token }, { })
                     runOnUiThread {
+                        if (my != token) return@runOnUiThread
                         sending = false
                         val t = r.text
                         if (t != null) {
@@ -49,6 +53,17 @@ class ChatActivity : Activity() {
                 }
             }
         }
+        p.button("إيقاف الرد الجاري") {
+            if (sending) {
+                token++
+                Http.cancelAll()
+                sending = false
+                if (hist.isNotEmpty() && hist[hist.size - 1].role == "user") hist.removeAt(hist.size - 1)
+                log.text = "تم إيقاف الرد"
+            } else {
+                Ui.toast(this, "لا يوجد رد جارٍ")
+            }
+        }
         p.button("استماع / إيقاف الاستماع") {
             if (Speaker.isSpeaking()) Speaker.stop() else Speaker.speak(log.text.toString())
         }
@@ -60,6 +75,8 @@ class ChatActivity : Activity() {
     }
 
     override fun onDestroy() {
+        token++
+        Http.cancelAll()
         Speaker.stop()
         super.onDestroy()
     }

@@ -46,6 +46,7 @@ class WorkActivity : Activity() {
         Ui.live(status)
         p.bottomButton("إيقاف والرجوع") {
             token++
+            Http.cancelAll()
             finish()
         }
         if (mode == "write" || mode == "translate_text" || mode == "ask") {
@@ -238,8 +239,8 @@ class WorkActivity : Activity() {
             "translate_text" -> "ترجم النص التالي ترجمة دقيقة وطبيعية. لو المستخدم محددش اللغة المطلوبة ترجمه للعربية المصرية. اطلع بالترجمة بس.\nالنص:"
             else -> "جاوب عن السؤال التالي بوضوح وباللغة اللي اتسأل بيها:\n"
         }
-        val e = p.edit(hint, "", 6, false)
-        p.button("إرسال") {
+        val e = p.pinnedEdit(hint, "")
+        p.pinnedButton("إرسال") {
             val v = e.text.toString().trim()
             if (v.isEmpty()) {
                 Ui.toast(this, "اكتب النص أولًا")
@@ -285,6 +286,7 @@ class WorkActivity : Activity() {
 
     override fun onDestroy() {
         token++
+        Http.cancelAll()
         super.onDestroy()
     }
 }

@@ -21,11 +21,12 @@ class TtsActivity : Activity() {
         Speaker.init(this)
         val p = Page(this, "تحويل النص إلى صوت")
         summary = p.text("", 15f)
-        input = p.edit("اكتب النص هنا", "", 7, false)
+        input = p.pinnedEdit("اكتب النص هنا", "")
+        p.pinnedButton("تحويل النص إلى صوت وتشغيله") { convert(false) }
         status = p.text("", 16f)
         Ui.live(status)
 
-        p.button("تحويل النص إلى صوت وتشغيله") { convert(false) }
+        p.button("إلغاء التحويل الجاري") { cancelConvert() }
         p.button("تشغيل / إيقاف الصوت") { togglePlay() }
         p.button("ترجمة وقراءة") { convert(true) }
         p.button("موسيقى ومؤثرات صوتية (مطر، بحر، طيور، أدعية، ومزج على ملف جاهز)") { openSettings("fx") }
@@ -51,6 +52,13 @@ class TtsActivity : Activity() {
         summary.text = "المحرك: " + eng + ". الصوت: " + Store.ttsVoice() + " (" + vd + "). عدد الأصوات: " + Store.nVoices() +
             ". الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first + ". اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first +
             ". السرعة: " + Prompts.PACE[Store.ttsPace()].first + ". الترجمة: " + tr + ". المزج مع الموسيقى: " + fx
+    }
+
+    // إلغاء حقيقي: يقطع الاتصال الجاري ولا يكمل أي محاولة بعده
+    private fun cancelConvert() {
+        token++
+        Http.cancelAll()
+        status.text = "تم إلغاء التحويل"
     }
 
     private fun openSettings(pg: String) {
@@ -225,6 +233,7 @@ class TtsActivity : Activity() {
 
     override fun onDestroy() {
         token++
+        Http.cancelAll()
         Speaker.stop()
         super.onDestroy()
     }

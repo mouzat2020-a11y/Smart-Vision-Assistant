@@ -22,6 +22,7 @@ class Page(val act: Activity, title: String) {
     val root = LinearLayout(act)
     val content = LinearLayout(act)
     val bottom = LinearLayout(act)
+    val pinned = LinearLayout(act)
 
     init {
         root.orientation = LinearLayout.VERTICAL
@@ -34,6 +35,9 @@ class Page(val act: Activity, title: String) {
         val sv = ScrollView(act)
         sv.addView(content)
         root.addView(sv, LinearLayout.LayoutParams(-1, 0, 1f))
+        pinned.orientation = LinearLayout.VERTICAL
+        pinned.layoutDirection = View.LAYOUT_DIRECTION_RTL
+        root.addView(pinned, LinearLayout.LayoutParams(-1, -2))
         root.addView(bottom, LinearLayout.LayoutParams(-1, -2))
         act.setContentView(root)
         act.title = title
@@ -85,6 +89,32 @@ class Page(val act: Activity, title: String) {
         if (secret) e.inputType = 129
         content.addView(e)
         return e
+    }
+
+    // مربع كتابة ثابت أسفل الشاشة فوق أزرار التنقل (مثل تطبيقات الدردشة)
+    fun pinnedEdit(hint: String, initial: String): EditText {
+        val e = EditText(act)
+        e.hint = hint
+        e.contentDescription = hint
+        e.setText(initial)
+        e.minLines = 2
+        e.maxLines = 5
+        e.gravity = Gravity.TOP or Gravity.START
+        e.isVerticalScrollBarEnabled = true
+        act.window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        pinned.addView(e)
+        return e
+    }
+
+    // زر ثابت أسفل الشاشة تحت مربع الكتابة مباشرة
+    fun pinnedButton(label: String, action: () -> Unit): Button {
+        val b = Button(act)
+        b.text = label
+        b.textSize = 16f
+        b.isAllCaps = false
+        b.setOnClickListener { action() }
+        pinned.addView(b)
+        return b
     }
 
     fun button(label: String, action: () -> Unit): Button {
