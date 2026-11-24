@@ -25,6 +25,9 @@ class MainActivity : Activity() {
         Pair("translate", "ترجمة النص الموجود داخل صورة")
     )
 
+    // أيقونة لكل تبويب (الصور، المساعدات والكتابة، الصوت)
+    private val tabIcons = listOf(R.drawable.tab_images, R.drawable.tab_help, R.drawable.tab_audio)
+
     private val dailyTools = listOf(
         Pair("find", "ابحث عن شيء في المكان"),
         Pair("medicine", "اقرأ عبوة دواء أو منتج صحي"),
@@ -66,6 +69,12 @@ class MainActivity : Activity() {
             b.text = tabNames[i]
             b.isAllCaps = false
             b.textSize = 15f
+            // الأيقونة فوق اسم التبويب للعين فقط، والنص والوصف الصوتي زي ما هم
+            val icon = resources.getDrawable(tabIcons[i], theme)
+            val sz = (36 * resources.displayMetrics.density).toInt()
+            icon.setBounds(0, 0, sz, sz)
+            b.setCompoundDrawablesRelative(null, icon, null, null)
+            b.compoundDrawablePadding = (4 * resources.displayMetrics.density).toInt()
             b.setOnClickListener { showTab(i) }
             row.addView(b, LinearLayout.LayoutParams(0, -2, 1f))
             tabButtons.add(b)
