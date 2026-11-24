@@ -64,7 +64,7 @@ class SettingsActivity : Activity() {
         p.section("مزودو الذكاء الاصطناعي")
         p.text("المزود الأساسي الحالي: " + Store.pname(Store.provider()), 16f)
         for (pr in Store.PROVIDERS) {
-            val st = if (Store.hasKey(pr)) "المفتاح محفوظ" else "لا يوجد مفتاح"
+            val st = keyStatusText(pr, false)
             p.button("إعدادات " + Store.pname(pr) + " (" + st + ")") { open(pr) }
         }
         p.check("التبديل التلقائي لمزود آخر عند فشل الأساسي", Store.cross()) { v -> Store.setCross(v) }
@@ -80,7 +80,7 @@ class SettingsActivity : Activity() {
     private fun providerPage(pr: String) {
         val name = Store.pname(pr)
         val p = Page(this, "إعدادات " + name)
-        val st = if (Store.hasKey(pr)) "المفتاح محفوظ ومشفّر" else "لا يوجد مفتاح"
+        val st = keyStatusText(pr, true)
         p.section("المفتاح")
         p.label("الحالة: " + st + ". احصل على المفتاح من الموقع " + Store.psite(pr))
         keyField = p.edit("الصق مفتاح " + name + " هنا", "", 1, true)
@@ -111,6 +111,14 @@ class SettingsActivity : Activity() {
         p.bottomButton("رجوع") { finish() }
     }
 
+    // حالة المفتاح بوضوح: لا يوجد، محفوظ، أو محفوظ لكن تعذّر فتحه
+    private fun keyStatusText(pr: String, withEnc: Boolean): String {
+        val s = Store.keyState(pr)
+        if (s == 1) return if (withEnc) "المفتاح محفوظ ومشفّر" else "المفتاح محفوظ"
+        if (s == 2) return "المفتاح محفوظ لكن تعذّر فتحه، احذفه وأدخله من جديد"
+        return "لا يوجد مفتاح"
+    }
+
     private fun saveKeyNow() {
         val f = keyField
         if (f == null) return
@@ -137,6 +145,8 @@ class SettingsActivity : Activity() {
             if (err == null) {
                 k.setText("")
                 Ui.toast(this, "تم حفظ المفتاح")
+            } else if (err.startsWith("تعذّر")) {
+                Ui.toast(this, err)
             }
         }
         val m = modelField
@@ -160,7 +170,11 @@ class SettingsActivity : Activity() {
     private fun testProvider(pr: String) {
         saveFields()
         if (!Store.hasKey(pr)) {
-            Ui.message(this, "اختبار الاتصال", "لا يوجد مفتاح محفوظ لـ" + Store.pname(pr) + ". الصق المفتاح واضغط حفظ المفتاح أولًا.")
+            if (Store.keyState(pr) == 2) {
+                Ui.message(this, "اختبار الاتصال", Store.missingKeyMsg(pr))
+            } else {
+                Ui.message(this, "اختبار الاتصال", "لا يوجد مفتاح محفوظ لـ" + Store.pname(pr) + ". الصق المفتاح واضغط حفظ المفتاح أولًا.")
+            }
             return
         }
         testToken++

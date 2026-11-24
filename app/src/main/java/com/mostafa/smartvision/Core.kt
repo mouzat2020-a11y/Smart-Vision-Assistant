@@ -7,6 +7,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.KeyStore
@@ -37,7 +38,8 @@ object Crypto {
         return gen.generateKey()
     }
 
-    fun enc(plain: String): String {
+    // يرجع null لو التشفير فشل. لا يتم تخزين أي مفتاح كنص صريح أبدًا.
+    fun enc(plain: String): String? {
         try {
             val c = Cipher.getInstance("AES/GCM/NoPadding")
             c.init(Cipher.ENCRYPT_MODE, secretKey())
@@ -45,12 +47,13 @@ object Crypto {
             val ct = c.doFinal(plain.toByteArray(Charsets.UTF_8))
             return "e1:" + Base64.encodeToString(iv + ct, Base64.NO_WRAP)
         } catch (e: Exception) {
-            return "p1:" + plain
+            return null
         }
     }
 
     fun dec(stored: String): String {
         try {
+            // p1: صيغة قديمة (نص صريح). نقرؤها فقط لترحيلها، ولا نكتبها أبدًا
             if (stored.startsWith("p1:")) return stored.substring(3)
             if (!stored.startsWith("e1:")) return ""
             val all = Base64.decode(stored.substring(3), Base64.NO_WRAP)
@@ -69,15 +72,83 @@ object Crypto {
 object Store {
     val PROVIDERS = listOf("gemini", "groq")
     private var holder: SharedPreferences? = null
+    private var vaultFile: File? = null
 
     private fun prefs(): SharedPreferences {
         return holder!!
     }
 
+    // المفاتيح المشفّرة تُحفظ في ملف داخل مجلد no_backup الخاص بالتطبيق،
+    // وأندرويد يستثني هذا المجلد من النسخ الاحتياطي تلقائيًا (بدون أي ملفات إعداد إضافية)
+    private fun vRead(): JSONObject {
+        try {
+            val f = vaultFile ?: return JSONObject()
+            if (!f.exists()) return JSONObject()
+            return JSONObject(f.readText(Charsets.UTF_8))
+        } catch (e: Exception) {
+            return JSONObject()
+        }
+    }
+
+    private fun vWrite(o: JSONObject): Boolean {
+        try {
+            val f = vaultFile ?: return false
+            val tmp = File(f.parentFile, f.name + ".tmp")
+            tmp.writeText(o.toString(), Charsets.UTF_8)
+            if (!tmp.renameTo(f)) {
+                tmp.delete()
+                return false
+            }
+            return true
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
+    private fun vGet(name: String): String { return vRead().optString(name, "") }
+
+    private fun vPut(name: String, value: String): Boolean {
+        val o = vRead()
+        o.put(name, value)
+        if (!vWrite(o)) return false
+        return vGet(name) == value
+    }
+
+    private fun vRemove(name: String) {
+        val o = vRead()
+        if (!o.has(name)) return
+        o.remove(name)
+        vWrite(o)
+    }
+
     fun init(ctx: Context) {
         if (holder != null) return
-        holder = ctx.applicationContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val app = ctx.applicationContext
+        holder = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        vaultFile = File(app.noBackupFilesDir, "secure_keys.json")
         migrate()
+        moveKeys()
+    }
+
+    // ترحيل آمن: ينقل كل مفتاح إلى الملف المستقل مشفّرًا (ويحوّل أي مفتاح نصي قديم p1:).
+    // لا تُحذف النسخة القديمة إلا بعد التأكد أن النسخة الجديدة تُفتح وتطابق الأصل.
+    private fun moveKeys() {
+        val s = prefs()
+        for (name in listOf("gemini", "groq", "openrouter")) {
+            val old = s.getString("enc_" + name, "") ?: ""
+            if (old.isEmpty()) continue
+            val cur = vGet("enc_" + name)
+            if (cur.isNotEmpty()) {
+                if (Crypto.dec(cur).isNotEmpty()) s.edit().remove("enc_" + name).commit()
+                continue
+            }
+            val plain = Crypto.dec(old)
+            if (plain.isEmpty()) continue
+            val fresh = Crypto.enc(plain) ?: continue
+            if (Crypto.dec(fresh) != plain) continue
+            if (!vPut("enc_" + name, fresh)) continue
+            s.edit().remove("enc_" + name).commit()
+        }
     }
 
     private fun migrate() {
@@ -86,6 +157,7 @@ object Store {
         val e = p.edit()
         val oldNames = listOf("gemini", "openrouter", "groq")
         var oldProvider = 0
+        var failed = false
         try { oldProvider = p.getInt("provider", 0) } catch (ex: Exception) { oldProvider = 0 }
         for (i in 0..2) {
             var raw = ""
@@ -94,15 +166,26 @@ object Store {
                 try { raw = p.getString("key", "") ?: "" } catch (ex: Exception) { raw = "" }
             }
             raw = raw.trim()
-            if (raw.length >= 10) e.putString("enc_" + oldNames[i], Crypto.enc(raw))
-            e.remove("key_$i")
+            if (raw.length >= 10) {
+                val enc = Crypto.enc(raw)
+                if (enc != null) {
+                    e.putString("enc_" + oldNames[i], enc)
+                    e.remove("key_$i")
+                } else {
+                    failed = true
+                }
+            } else {
+                e.remove("key_$i")
+            }
             e.remove("model_$i")
         }
-        e.remove("key")
-        e.remove("provider")
-        if (oldProvider < 0 || oldProvider > 2) oldProvider = 0
-        e.putString("prov", oldNames[oldProvider])
-        e.putBoolean("mig2", true)
+        if (!failed) {
+            e.remove("key")
+            e.remove("provider")
+            if (oldProvider < 0 || oldProvider > 2) oldProvider = 0
+            e.putString("prov", oldNames[oldProvider])
+            e.putBoolean("mig2", true)
+        }
         e.apply()
     }
 
@@ -129,10 +212,30 @@ object Store {
 
     fun setProvider(p: String) { prefs().edit().putString("prov", p).apply() }
 
+    private fun stored(p: String): String {
+        val a = vGet("enc_" + p)
+        if (a.isNotEmpty()) return a
+        return prefs().getString("enc_$p", "") ?: ""
+    }
+
     fun key(p: String): String {
-        val s = prefs().getString("enc_$p", "") ?: ""
+        val s = stored(p)
         if (s.isEmpty()) return ""
         return Crypto.dec(s).replace(Regex("\\s"), "")
+    }
+
+    // 0 لا يوجد مفتاح، 1 مفتاح سليم، 2 مفتاح محفوظ لكن تعذّر فتحه
+    fun keyState(p: String): Int {
+        val s = stored(p)
+        if (s.isEmpty()) return 0
+        return if (Crypto.dec(s).replace(Regex("\\s"), "").length >= 10) 1 else 2
+    }
+
+    fun missingKeyMsg(p: String): String {
+        if (keyState(p) == 2) {
+            return "المفتاح المحفوظ لـ" + pname(p) + " تعذّر فتحه، غالبًا بسبب استعادة نسخة احتياطية أو تغيير في الجهاز. احذف المفتاح من الإعدادات وأدخله من جديد."
+        }
+        return "لا يوجد مفتاح " + pname(p) + ". أضفه من الإعدادات."
     }
 
     fun hasKey(p: String): Boolean { return key(p).length >= 10 }
@@ -147,11 +250,20 @@ object Store {
         val k = raw.replace(Regex("\\s"), "")
         if (k.length < 10) return "المفتاح قصير أو فارغ"
         if (p == "groq" && !k.startsWith("gsk_")) return "مفتاح Groq لازم يبدأ بـ gsk_"
-        prefs().edit().putString("enc_$p", Crypto.enc(k)).apply()
+        val enc = Crypto.enc(k) ?: return "تعذّر تشفير المفتاح على هذا الجهاز، فلم يُحفظ. أعد تشغيل الهاتف ثم جرّب مرة أخرى."
+        if (!vPut("enc_" + p, enc)) return "تعذّر حفظ المفتاح. جرّب مرة أخرى."
+        if (Crypto.dec(enc) != k) {
+            vRemove("enc_" + p)
+            return "تعذّر التحقق من المفتاح بعد حفظه، فلم يُحفظ. أعد إدخاله."
+        }
+        prefs().edit().remove("enc_$p").apply()
         return null
     }
 
-    fun removeKey(p: String) { prefs().edit().remove("enc_$p").apply() }
+    fun removeKey(p: String) {
+        vRemove("enc_" + p)
+        prefs().edit().remove("enc_$p").apply()
+    }
 
     fun model(p: String): String { return (prefs().getString("model_$p", "") ?: "").trim() }
     fun setModel(p: String, v: String) { prefs().edit().putString("model_$p", v.trim()).apply() }
@@ -305,7 +417,27 @@ object PlainText {
 class HttpResult(val code: Int, val body: String)
 
 object Http {
+    // أسرار الترويسات (مفتاح Gemini أو Authorization) لإخفائها من أي نص خطأ
+    private fun secretsOf(headers: Map<String, String>): List<String> {
+        val out = ArrayList<String>()
+        for ((k, v) in headers) {
+            if (k.equals("authorization", true) || k.equals("x-goog-api-key", true)) {
+                val s = v.removePrefix("Bearer ").trim()
+                if (s.length >= 8) out.add(s)
+            }
+        }
+        return out
+    }
+
+    private fun scrub(text: String, secrets: List<String>): String {
+        var t = text
+        for (s in secrets) if (t.contains(s)) t = t.replace(s, "***")
+        return t
+    }
+
     fun post(url: String, body: String, headers: Map<String, String>, readMs: Int): HttpResult {
+        if (!url.startsWith("https://")) return HttpResult(-1, "تم رفض الاتصال لأنه غير مشفّر")
+        val secrets = secretsOf(headers)
         try {
             val conn = URL(url).openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
@@ -318,9 +450,9 @@ object Http {
             val code = conn.responseCode
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val text = if (stream == null) "" else stream.bufferedReader().use { it.readText() }
-            return HttpResult(code, text)
+            return HttpResult(code, if (code in 200..299) text else scrub(text, secrets))
         } catch (e: Exception) {
-            return HttpResult(-1, e.message ?: e.javaClass.simpleName)
+            return HttpResult(-1, scrub(e.message ?: e.javaClass.simpleName, secrets))
         }
     }
 }
@@ -381,6 +513,7 @@ object Ai {
             for (p in Store.PROVIDERS) if (p != cur && Store.hasKey(p)) order.add(p)
         }
         if (order.isEmpty()) {
+            for (p in Store.PROVIDERS) if (Store.keyState(p) == 2) return AiResult(null, Store.missingKeyMsg(p))
             return AiResult(null, "لا يوجد مفتاح لأي مزود. افتح الإعدادات وأضف مفتاحًا لمزود واحد على الأقل.")
         }
         var firstErr: String? = null
@@ -519,7 +652,7 @@ object Ai {
 
     private fun callGemini(h: List<Msg>, cancel: () -> Boolean, progress: (String) -> Unit, override: String? = null): AiResult {
         val key = Store.key("gemini")
-        if (key.isEmpty()) return AiResult(null, "لا يوجد مفتاح Gemini. أضفه من الإعدادات.")
+        if (key.isEmpty()) return AiResult(null, Store.missingKeyMsg("gemini"))
         val first = override ?: Store.model("gemini")
         val cand = ArrayList<String>()
         if (first.isNotEmpty()) cand.add(first)
@@ -655,7 +788,7 @@ object Ai {
 
     private fun callOpenAi(p: String, h: List<Msg>, cancel: () -> Boolean, progress: (String) -> Unit): AiResult {
         val key = Store.key(p)
-        if (key.isEmpty()) return AiResult(null, "لا يوجد مفتاح " + Store.pname(p) + ". أضفه من الإعدادات.")
+        if (key.isEmpty()) return AiResult(null, Store.missingKeyMsg(p))
         var hasImg = false
         for (m in h) if (m.images.isNotEmpty()) hasImg = true
         val list = chain(p, hasImg)
