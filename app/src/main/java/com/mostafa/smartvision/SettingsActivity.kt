@@ -758,13 +758,22 @@ class SettingsActivity : Activity() {
             Ui.toast(this, "اختار الأول")
             return
         }
-        Ui.toast(this, "جاري تجهيز العينة")
         testToken++
         val my = testToken
+        Speaker.stop()
+        AudioPlayer.stop()
+        Ui.toast(this, "جاري تجهيز العينة")
         thread {
             try {
                 val pcm = Fx.preview(type, id, 24000)
-                val f = File(cacheDir, "fx_sample.wav")
+                if (my != testToken) return@thread
+                val olds = cacheDir.listFiles()
+                if (olds != null) {
+                    for (o in olds) {
+                        if (o.isFile && o.name.startsWith("fx_sample") && o.name.endsWith(".wav")) o.delete()
+                    }
+                }
+                val f = File(cacheDir, "fx_sample_" + System.currentTimeMillis() + ".wav")
                 f.writeBytes(TtsEngine.wav(pcm, 24000))
                 runOnUiThread {
                     if (my == testToken) {
@@ -773,7 +782,7 @@ class SettingsActivity : Activity() {
                     }
                 }
             } catch (e: Throwable) {
-                runOnUiThread { Ui.toast(this, "تعذر تجهيز العينة") }
+                runOnUiThread { if (my == testToken) Ui.toast(this, "تعذر تجهيز العينة") }
             }
         }
     }
@@ -865,18 +874,31 @@ class SettingsActivity : Activity() {
             Ui.toast(this, "تجربة الصوت تحتاج مفتاح Gemini")
             return
         }
-        Ui.toast(this, "جاري تجهيز العينة")
+        // نوقف أي تشغيل أو طلب عينة سابق فورًا قبل تجهيز العينة الجديدة
         testToken++
         val my = testToken
+        Speaker.stop()
+        AudioPlayer.stop()
+        Http.cancelAll()
+        Ui.toast(this, "جاري تجهيز العينة")
         thread {
             val out = TtsEngine.synthChunk("أهلًا بك، هذه تجربة بسيطة للصوت الذي سيقرأ لك النص.", Store.ttsVoice(), TtsEngine.styleText(), { my != testToken }, { })
             val pcm = out.pcm
             runOnUiThread {
+                // لو بدأت تجربة أحدث نتجاهل هذه العينة القديمة ولا نشغّلها
+                if (my != testToken) return@runOnUiThread
                 if (pcm == null) {
                     Ui.toast(this, "تعذرت العينة: " + (out.error ?: ""))
                 } else {
                     try {
-                        val f = File(cacheDir, "sample.wav")
+                        // اسم جديد لكل عينة، وبنمسح القديم، حتى لا نكتب فوق ملف المشغّل لسه بيقرا منه
+                        val olds = cacheDir.listFiles()
+                        if (olds != null) {
+                            for (o in olds) {
+                                if (o.isFile && o.name.startsWith("sample") && o.name.endsWith(".wav")) o.delete()
+                            }
+                        }
+                        val f = File(cacheDir, "sample_" + System.currentTimeMillis() + ".wav")
                         f.writeBytes(TtsEngine.wav(TtsEngine.pad(pcm, out.rate), out.rate))
                         Speaker.stop()
                         AudioPlayer.play(f.absolutePath) { }
