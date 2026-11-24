@@ -102,6 +102,8 @@ class MainActivity : Activity() {
             }
             page.button("الدردشة مع صورة (اسأل عن صورة)") { launch("chat", "") }
         } else if (i == 1) {
+            page.section("المستندات")
+            page.button("قراءة ملف PDF") { openPdfReader() }
             page.section("مساعدات الحياة اليومية")
             for (t in dailyTools) {
                 page.button(t.second) { launch(t.first, "") }
@@ -114,6 +116,14 @@ class MainActivity : Activity() {
             page.section("الصوت")
             page.button("تحويل النص إلى صوت") { startActivity(Intent(this, TtsActivity::class.java)) }
         }
+    }
+
+    private fun openPdfReader() {
+        if (!Store.hasAny()) {
+            Ui.message(this, "مفتاح الذكاء الاصطناعي", "أضف مفتاحًا لمزود واحد على الأقل من الإعدادات أولًا.")
+            return
+        }
+        startActivity(Intent(this, PdfActivity::class.java))
     }
 
     private fun launch(mode: String, source: String) {
