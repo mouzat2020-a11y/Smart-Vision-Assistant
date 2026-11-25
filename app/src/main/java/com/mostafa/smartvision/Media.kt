@@ -328,7 +328,7 @@ object TtsEngine {
                     if (b.size > 48 && b[0] == 'R'.code.toByte() && b[1] == 'I'.code.toByte() && b[2] == 'F'.code.toByte()) {
                         b = b.copyOfRange(48, b.size)
                     }
-                    return TtsOut(polish(b, rate), rate, null)
+                    return TtsOut(Seams.clean(b, rate), rate, null)
                 }
             }
         } catch (e: Exception) {
@@ -513,14 +513,21 @@ object TtsEngine {
         val segs = segments(text, n, mode)
         val all = ByteArrayOutputStream()
         var rate = 24000
+        var prevVoice = ""
         for (i in segs.indices) {
             if (cancel()) return TtsOut(null, 0, "تم الإيقاف")
             if (segs.size > 1) progress("جاري تحويل المقطع " + (i + 1) + " من " + segs.size)
             val s = segs[i]
-            val r = synthRaw(s.text, voices[s.voice.coerceIn(0, n - 1)], style, cancel, progress)
+            val vname = voices[s.voice.coerceIn(0, n - 1)]
+            val r = synthRaw(s.text, vname, style, cancel, progress)
             val b = r.pcm ?: return TtsOut(null, 0, r.error)
             rate = r.rate
-            if (i > 0) all.write(ByteArray((rate * 250 / 1000) * 2))
+            // فاصل صمت نضيف: أطول عند تغيّر الصوت، وأقصر لو نفس الصوت (زي إضافة Lua)
+            if (i > 0) {
+                val ms = if (prevVoice != vname) 350 else 120
+                all.write(ByteArray((rate * ms / 1000) * 2))
+            }
+            prevVoice = vname
             all.write(b)
         }
         return TtsOut(pad(all.toByteArray(), rate), rate, null)
@@ -553,5 +560,122 @@ object TtsEngine {
         h.put("data".toByteArray())
         h.putInt(pcm.size)
         return h.array() + pcm
+    }
+}
+
+// ================== قص شوائب أطراف الصوت (نفس منطق إضافة Lua: cleanSeams) ==================
+// كل مقطع بيتولد لوحده من Gemini، وممكن يبدأ أو ينتهي بنقرة أو نفَس أو شوشرة قصيرة معزولة عن الكلام.
+// بنقص الشوائب دي من أطراف المقطع، وبنقص الصمت الزايد، وبنعمل تلاشي سريع للبداية والنهاية.
+object Seams {
+    private fun sampleAt(b: ByteArray, i: Int): Int {
+        val lo = b[i * 2].toInt() and 0xFF
+        val hi = b[i * 2 + 1].toInt()
+        return (hi shl 8) or lo
+    }
+
+    private fun scale(b: ByteArray, idx: Int, g: Float) {
+        val v = (sampleAt(b, idx) * g).toInt()
+        b[idx * 2] = (v and 0xFF).toByte()
+        b[idx * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+    }
+
+    fun clean(pcm: ByteArray, rate: Int): ByteArray {
+        val nS = pcm.size / 2
+        val W = rate * 10 / 1000
+        if (W < 8) return TtsEngine.polish(pcm, rate)
+        val nw = nS / W
+        if (nw < 6) return TtsEngine.polish(pcm, rate)
+
+        // طاقة كل نافذة 10 ملي ثانية
+        val r = DoubleArray(nw)
+        for (w in 0 until nw) {
+            var sum = 0.0
+            val p0 = w * W
+            for (k in 0 until W) {
+                val v = sampleAt(pcm, p0 + k).toDouble()
+                sum += v * v
+            }
+            r[w] = Math.sqrt(sum / W)
+        }
+        val sorted = r.copyOf()
+        sorted.sort()
+        val ref = sorted[maxOf(1, (nw * 0.9).toInt()) - 1]
+        val thr = maxOf(ref * 0.05, 40.0)
+
+        // مجموعات الكلام: الفجوات الأقصر من 60 ملي ثانية بتتعتبر جزء من نفس الكلام
+        val runs = ArrayList<IntArray>()
+        var w = 0
+        while (w < nw) {
+            if (r[w] > thr) {
+                val a = w
+                var b = w
+                var q = w + 1
+                while (q < nw) {
+                    if (r[q] > thr) {
+                        b = q
+                        q++
+                    } else {
+                        var e = q
+                        while (e < nw && r[e] <= thr) e++
+                        if (e < nw && (e - q) < 6) q = e else break
+                    }
+                }
+                runs.add(intArrayOf(a, b))
+                w = b + 1
+            } else {
+                w++
+            }
+        }
+        if (runs.isEmpty()) return TtsEngine.polish(pcm, rate)
+
+        // شوائب في أول أو آخر المقطع: فرقعة أو شوشرة قصيرة معزولة عن الكلام بفجوة 80 ملي ثانية أو أكتر
+        fun isArtifact(run: IntArray, gap: Int): Boolean {
+            val len = run[1] - run[0] + 1
+            if (gap < 8 || len > 25) return false
+            if (len <= 6) return true
+            val p0 = run[0] * W
+            val n = len * W
+            var sum = 0.0
+            var zc = 0
+            var prevSign = 0
+            for (i in 0 until n) {
+                val v = sampleAt(pcm, p0 + i)
+                sum += v.toDouble() * v
+                val sg = if (v >= 0) 1 else -1
+                if (prevSign != 0 && sg != prevSign) zc++
+                prevSign = sg
+            }
+            val rmsR = Math.sqrt(sum / n)
+            val zcr = zc.toDouble() / n
+            val acts = ArrayList<Double>()
+            for (w2 in 0 until nw) {
+                if (r[w2] > thr && (w2 < run[0] || w2 > run[1])) acts.add(r[w2])
+            }
+            if (acts.size < 10) return false
+            acts.sort()
+            val med = acts[acts.size / 2]
+            return rmsR >= med * 1.8 || zcr >= 0.28
+        }
+        for (iter in 0 until 3) {
+            if (runs.size >= 2 && isArtifact(runs[0], runs[1][0] - runs[0][1] - 1)) runs.removeAt(0)
+            val n = runs.size
+            if (n >= 2 && isArtifact(runs[n - 1], runs[n - 1][0] - runs[n - 2][1] - 1)) runs.removeAt(n - 1)
+        }
+
+        // نبدأ قبل الكلام بـ 20 ملي ثانية وننتهي بعده بـ 50 ملي ثانية
+        val a0 = runs[0][0]
+        val b0 = runs[runs.size - 1][1]
+        val startS = maxOf(0, (a0 - 2) * W)
+        val endS = minOf(nS, (b0 + 6) * W)
+        val m = endS - startS
+        if (m < W * 4) return TtsEngine.polish(pcm, rate)
+
+        val fi = minOf(W, m / 4)
+        val fo = minOf(4 * W, m / 4)
+        val out = ByteArray(m * 2)
+        System.arraycopy(pcm, startS * 2, out, 0, m * 2)
+        for (i in 0 until fi) scale(out, i, i.toFloat() / fi.toFloat())
+        for (i in 0 until fo) scale(out, m - fo + i, (fo - 1 - i).toFloat() / fo.toFloat())
+        return out
     }
 }
