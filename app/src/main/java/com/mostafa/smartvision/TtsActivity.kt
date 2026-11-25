@@ -119,13 +119,8 @@ class TtsActivity : Activity() {
             return
         }
         val doTranslate = translateNow || Store.ttsTranslateOn()
-        if (Store.ttsEngine() == "system" && !doTranslate) {
-            AudioPlayer.stop()
-            Speaker.speak(txt)
-            status.text = "جاري القراءة بصوت النظام"
-            return
-        }
-        if (Store.ttsEngine() != "system" && !Store.hasKey("gemini")) {
+        val isSystem = Store.ttsEngine() == "system"
+        if (!isSystem && !Store.hasKey("gemini")) {
             Ui.message(this, "مفتاح Gemini", "التحويل بأصوات Gemini يحتاج مفتاح Gemini، أضفه من الإعدادات. أو اختر محرك صوت النظام من الإعدادات المتقدمة.")
             return
         }
@@ -134,6 +129,7 @@ class TtsActivity : Activity() {
         status.text = "جاري التحويل"
         Speaker.stop()
         AudioPlayer.stop()
+        val appCtx = applicationContext
         thread {
             var text = txt
             if (doTranslate) {
@@ -149,11 +145,12 @@ class TtsActivity : Activity() {
                 Session.lastTranslation = t
                 post(my, "تمت الترجمة، جاري التحويل إلى صوت")
             }
-            if (Store.ttsEngine() == "system") {
-                runOnUiThread { if (my == token) { Speaker.speak(text); status.text = "جاري القراءة بصوت النظام" } }
-                return@thread
+            // محرك النظام: يولّد ملفًا ويحوّله لنفس شكل ناتج Gemini، ثم يكمل نفس المسار (فحص، مزج، حفظ، تشغيل)
+            val out = if (isSystem) {
+                SystemTts.synth(appCtx, text, { my != token }, { m -> post(my, m) })
+            } else {
+                TtsEngine.synthMulti(text, TtsEngine.activeVoices(), Store.mixMode(), TtsEngine.styleText(), { my != token }, { m -> post(my, m) })
             }
-            val out = TtsEngine.synthMulti(text, TtsEngine.activeVoices(), Store.mixMode(), TtsEngine.styleText(), { my != token }, { m -> post(my, m) })
             val pcm = out.pcm
             if (pcm == null) {
                 post(my, "تعذر التحويل: " + (out.error ?: ""))
@@ -169,14 +166,21 @@ class TtsActivity : Activity() {
                 val dry = File(cacheDir, "tts_dry_" + stamp + ".wav")
                 dry.writeBytes(TtsEngine.wav(pcm, out.rate))
                 var finalPath = dry.absolutePath
+                var mixFailed = false
                 if (Store.fxOn()) {
                     post(my, "جاري مزج الموسيقى والمؤثرات")
-                    val mixed = Fx.mix(pcm, out.rate, Store.fxMusic(), Store.fxAmb1(), Store.fxAmb2(),
-                        Store.fxVol(0), Store.fxVol(1), Store.fxVol(2), Store.fxIntro(), Store.fxOutro())
-                    val mf = File(cacheDir, "tts_mix_" + stamp + ".wav")
-                    mf.writeBytes(TtsEngine.wav(mixed, out.rate))
-                    finalPath = mf.absolutePath
+                    try {
+                        val mixed = Fx.mix(pcm, out.rate, Store.fxMusic(), Store.fxAmb1(), Store.fxAmb2(),
+                            Store.fxVol(0), Store.fxVol(1), Store.fxVol(2), Store.fxIntro(), Store.fxOutro())
+                        val mf = File(cacheDir, "tts_mix_" + stamp + ".wav")
+                        mf.writeBytes(TtsEngine.wav(mixed, out.rate))
+                        finalPath = mf.absolutePath
+                    } catch (e: Throwable) {
+                        // فشل المزج: نكمل بالملف الجاف بدل ما نخسر الصوت
+                        mixFailed = true
+                    }
                 }
+                val failedMix = mixFailed
                 val fileBad = AudioCheck.wavFile(File(finalPath))
                 if (fileBad != null) {
                     post(my, fileBad)
@@ -188,7 +192,7 @@ class TtsActivity : Activity() {
                         Session.lastDryPath = dry.absolutePath
                         Session.lastRate = out.rate
                         Session.lastAudioPath = fp
-                        status.text = "تم التحويل، جاري التشغيل"
+                        status.text = if (failedMix) "تعذر مزج الموسيقى، جاري تشغيل الصوت بدونها" else "تم التحويل، جاري التشغيل"
                         val ok = AudioPlayer.play(fp) { status.text = "انتهى التشغيل" }
                         if (!ok) status.text = "تم إنشاء الملف لكن تعذر تشغيله"
                     }
