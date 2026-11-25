@@ -195,6 +195,15 @@ class WorkActivity : Activity() {
                 val s = Img.loadB64(this, u, 1600)
                 if (s != null) images.add(s)
             }
+            // صور كاميرا التطبيق المؤقتة: نحذفها بعد تجهيزها، فلا تبقى صورك على الجهاز
+            for (u in uris) {
+                try {
+                    if (u.scheme == "file") {
+                        val pf = File(u.path ?: "")
+                        if (pf.name.startsWith("cam_") && pf.parentFile?.absolutePath == cacheDir.absolutePath) pf.delete()
+                    }
+                } catch (e: Exception) { }
+            }
             if (images.isEmpty()) {
                 runOnUiThread { if (my == token) status.text = "تعذر تحميل الصورة" }
                 return@thread

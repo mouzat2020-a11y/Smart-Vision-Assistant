@@ -131,6 +131,7 @@ class TtsActivity : Activity() {
         AudioPlayer.stop()
         val appCtx = applicationContext
         thread {
+          try {
             var text = txt
             if (doTranslate) {
                 val lang = Prompts.LANGS[Store.ttsLang()]
@@ -200,6 +201,11 @@ class TtsActivity : Activity() {
             } catch (e: Exception) {
                 post(my, "تعذر حفظ الملف الصوتي")
             }
+          } catch (t: Throwable) {
+            // حماية من الانهيار (مثلًا نص طويل جدًا والذاكرة لا تكفي)
+            if (t is OutOfMemoryError) post(my, "تعذر التحويل: النص طويل جدًا والذاكرة لا تكفي. جرّب نصًا أقصر أو قسّمه على مرتين.")
+            else post(my, "تعذر التحويل بسبب خطأ غير متوقع. جرّب مرة أخرى.")
+          }
         }
     }
 

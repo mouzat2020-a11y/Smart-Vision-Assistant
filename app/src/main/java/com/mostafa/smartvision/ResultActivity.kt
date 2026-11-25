@@ -9,6 +9,11 @@ class ResultActivity : Activity() {
         super.onCreate(savedInstanceState)
         Store.init(this)
         Speaker.init(this)
+        // لو أندرويد أغلق التطبيق في الخلفية ضاعت النتيجة من الذاكرة، فنرجع للقائمة الرئيسية
+        if (Session.resultText.isBlank()) {
+            Ui.home(this)
+            return
+        }
         val p = Page(this, Session.resultTitle)
         // يحفظ النتيجة في السجل المحلي فقط لو المستخدم فعّل حفظ السجل من الخصوصية
         if (savedInstanceState == null) History.add(Session.resultTitle, Session.resultText)

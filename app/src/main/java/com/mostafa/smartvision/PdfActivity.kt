@@ -28,6 +28,8 @@ class PdfActivity : Activity() {
     private var cur = 0
     private val texts = ConcurrentHashMap<Int, String>()
     private val reqPick = 51
+    // اسم مؤقت خاص بهذه الشاشة، فلا تتلخبط مع شاشة PDF أخرى مفتوحة
+    private val tag = "pdf_src_" + System.nanoTime() + "_"
 
     private val PROMPT = "أنت تقرأ صفحة من ملف PDF لمستخدم مكفوف. اكتب النص الموجود في الصفحة كاملًا وبالترتيب الصحيح للقراءة كما هو، بدون تلخيص وبدون أي مقدمة أو تعليق قبل النص أو بعده. حافظ على ترتيب العناوين والفقرات. لو فيها جدول فاقرأه صفًا صفًا. لو فيها صورة أو رسم أو شعار مهم فاذكره بين قوسين بجملة قصيرة مثل [صورة: وصف قصير]. لو الصفحة فاضية أو بدون نص فاكتب: الصفحة فاضية. اكتب النص العربي كما هو بالعربية الصحيحة، واترك أي لغة أخرى بلغتها."
 
@@ -35,6 +37,7 @@ class PdfActivity : Activity() {
         super.onCreate(savedInstanceState)
         Store.init(this)
         Speaker.init(this)
+        cleanOldPdfTemps()
         val p = Page(this, "قراءة ملف PDF")
         status = p.text("اختر ملف PDF لأبدأ القراءة.", 17f)
         Ui.live(status)
@@ -55,6 +58,19 @@ class PdfActivity : Activity() {
         p.bottomButton("رجوع") { finish() }
         val u = incomingUri(intent)
         if (u != null) openPdf(u)
+    }
+
+    // ينظف نسخ PDF المؤقتة القديمة (الاسم القديم الثابت، وأي نسخة بقيت من تشغيل سابق انتهى بشكل مفاجئ)
+    private fun cleanOldPdfTemps() {
+        try {
+            val now = System.currentTimeMillis()
+            val fs = cacheDir.listFiles() ?: return
+            for (f in fs) {
+                if (!f.isFile) continue
+                if (f.name == "pdf_src.pdf") f.delete()
+                else if (f.name.startsWith("pdf_src_") && now - f.lastModified() > 6L * 3600L * 1000L) f.delete()
+            }
+        } catch (e: Exception) { }
     }
 
     private fun incomingUri(i: Intent?): Uri? {
@@ -125,7 +141,7 @@ class PdfActivity : Activity() {
             }
             var err: String? = null
             var n = 0
-            val f = File(cacheDir, "pdf_src.pdf")
+            val f = File(cacheDir, tag + my + ".pdf")
             try {
                 val ins = contentResolver.openInputStream(uri)
                 if (ins == null) {
@@ -143,6 +159,10 @@ class PdfActivity : Activity() {
             val fn = n
             val nm = name
             runOnUiThread {
+                if (my != token || fe != null || fn <= 0) {
+                    // هذه النسخة لن تُستخدم: نحذفها فورًا
+                    try { f.delete() } catch (e: Exception) { }
+                }
                 if (my != token) return@runOnUiThread
                 if (fe != null) {
                     status.text = fe
@@ -151,6 +171,10 @@ class PdfActivity : Activity() {
                 if (fn <= 0) {
                     status.text = "الملف فاضي"
                     return@runOnUiThread
+                }
+                val oldPdf = pdf
+                if (oldPdf != null && oldPdf != f) {
+                    try { oldPdf.delete() } catch (e: Exception) { }
                 }
                 pdf = f
                 count = fn
@@ -361,7 +385,10 @@ class PdfActivity : Activity() {
         Http.cancelAll()
         Speaker.stop()
         // نمسح نسخة الملف المؤقتة من الجهاز عند الخروج
-        try { File(cacheDir, "pdf_src.pdf").delete() } catch (e: Exception) { }
+        try {
+            val fs = cacheDir.listFiles()
+            if (fs != null) for (f in fs) if (f.name.startsWith(tag)) f.delete()
+        } catch (e: Exception) { }
         super.onDestroy()
     }
 }
