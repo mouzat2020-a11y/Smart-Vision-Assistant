@@ -11,7 +11,7 @@ import android.widget.LinearLayout
 class MainActivity : Activity() {
     private lateinit var page: Page
     private val tabButtons = ArrayList<Button>()
-    private val tabNames = listOf("الصور", "المساعدات والكتابة", "الصوت")
+    private val tabNames = listOf("الصور", "المساعدات والكتابة", "الصوت", "الأخبار")
 
     private val imageTools = listOf(
         Pair("currency", "التعرف على العملات الورقية"),
@@ -25,8 +25,8 @@ class MainActivity : Activity() {
         Pair("translate", "ترجمة النص الموجود داخل صورة")
     )
 
-    // أيقونة لكل تبويب (الصور، المساعدات والكتابة، الصوت)
-    private val tabIcons = listOf(R.drawable.tab_images, R.drawable.tab_help, R.drawable.tab_audio)
+    // أيقونة لكل تبويب (الصور، المساعدات والكتابة، الصوت، الأخبار). تبويب الأخبار يستعير أيقونة مؤقتة
+    private val tabIcons = listOf(R.drawable.tab_images, R.drawable.tab_help, R.drawable.tab_audio, R.drawable.tab_help)
 
     private val dailyTools = listOf(
         Pair("find", "ابحث عن شيء في المكان"),
@@ -112,9 +112,12 @@ class MainActivity : Activity() {
             page.button("الكتابة بالذكاء الاصطناعي") { launch("write", "") }
             page.button("ترجمة نص") { launch("translate_text", "") }
             page.button("اسأل الذكاء الاصطناعي") { launch("ask", "") }
-        } else {
+        } else if (i == 2) {
             page.section("الصوت")
             page.button("تحويل النص إلى صوت") { startActivity(Intent(this, TtsActivity::class.java)) }
+        } else {
+            page.section("الأخبار")
+            page.button("قارئ الأخبار (آخر الأخبار حسب القسم والدولة)") { startActivity(Intent(this, NewsActivity::class.java)) }
         }
     }
 

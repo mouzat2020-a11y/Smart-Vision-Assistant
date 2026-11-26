@@ -856,6 +856,48 @@ object Http {
         return "other"
     }
 
+    // طلب GET بسيط لقراءة خلاصات الأخبار (RSS). نفس قواعد الإلغاء ووجود الإنترنت، وحد أقصى لحجم الرد
+    fun get(url: String, headers: Map<String, String>, readMs: Int): HttpResult {
+        if (!url.startsWith("https://")) return HttpResult(-1, "تم رفض الاتصال لأنه غير مشفّر")
+        if (!Net.isOnline()) return HttpResult(-1, "offline")
+        val gen = cancelGen
+        val tag = owner.get() ?: ""
+        val tg = tagGenOf(tag)
+        var rec: Live? = null
+        try {
+            val c = URL(url).openConnection() as HttpURLConnection
+            val r = Live(c, tag)
+            rec = r
+            synchronized(live) { live.add(r) }
+            if (isCancelled(gen, tag, tg)) return HttpResult(-2, "cancelled")
+            c.requestMethod = "GET"
+            c.connectTimeout = 10000
+            c.readTimeout = readMs
+            c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36")
+            c.setRequestProperty("Accept-Language", "ar,en;q=0.8")
+            for ((k, v) in headers) c.setRequestProperty(k, v)
+            val code = c.responseCode
+            val stream = if (code in 200..299) c.inputStream else c.errorStream
+            var text = ""
+            if (stream != null) {
+                val raw = stream.use { readLimited(it, 8 * 1024 * 1024) }
+                if (raw == null) return HttpResult(-1, "حجم رد الخادم أكبر من الحد المسموح")
+                text = String(raw, Charsets.UTF_8)
+            }
+            return HttpResult(code, text)
+        } catch (e: Exception) {
+            if (isCancelled(gen, tag, tg)) return HttpResult(-2, "cancelled")
+            if (e is java.net.SocketTimeoutException) return HttpResult(-3, "timeout")
+            return HttpResult(-1, e.message ?: e.javaClass.simpleName)
+        } finally {
+            val r2 = rec
+            if (r2 != null) {
+                synchronized(live) { live.remove(r2) }
+                try { r2.conn.disconnect() } catch (e: Exception) { }
+            }
+        }
+    }
+
     // طلب مثل post لكنه يرجع بيانات ثنائية (للصوت). نفس قواعد الإلغاء والإخفاء، وحد أقصى لحجم الرد
     fun postBinary(url: String, body: String, headers: Map<String, String>, readMs: Int): BinResult {
         if (!url.startsWith("https://")) return BinResult(-1, null, "تم رفض الاتصال لأنه غير مشفّر")
