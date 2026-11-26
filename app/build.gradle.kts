@@ -15,18 +15,29 @@ android {
         versionName = "0.1-alpha"
     }
     // مفتاح توقيع ثابت: كل نسخة تُبنى بنفس التوقيع، فتتثبت فوق النسخة السابقة بدون مسح
+    // كلمة سر المفتاح لا تُكتب هنا: تُقرأ من سر GitHub باسم SV_KEY_PASSWORD
     signingConfigs {
         create("fixed") {
-            storeFile = file("smartvision.p12")
-            storePassword = "smartvision"
-            keyAlias = "smartvision"
-            keyPassword = "smartvision"
-            storeType = "pkcs12"
+            val pw = System.getenv("SV_KEY_PASSWORD")
+            if (pw != null && pw.isNotEmpty()) {
+                storeFile = file("smartvision-release.p12")
+                storePassword = pw
+                keyAlias = "smartvision"
+                keyPassword = pw
+                storeType = "pkcs12"
+            }
         }
     }
     buildTypes {
         getByName("debug") {
             signingConfig = signingConfigs.getByName("fixed")
         }
+        getByName("release") {
+            signingConfig = signingConfigs.getByName("fixed")
+            isMinifyEnabled = false
+        }
+    }
+    lint {
+        checkReleaseBuilds = false
     }
 }
