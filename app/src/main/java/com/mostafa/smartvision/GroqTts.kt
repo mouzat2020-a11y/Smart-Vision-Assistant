@@ -118,6 +118,23 @@ object GroqTts {
         return null
     }
 
+    // يقرأ مدة الانتظار من رسالة Groq (مثل: try again in 7.5s)، وإلا 15 ثانية
+    private fun retryWaitMs(body: String): Long {
+        val mt = Regex("try again in\\s+([0-9hms.]+)", RegexOption.IGNORE_CASE).find(body) ?: return 15000L
+        var total = 0.0
+        for (x in Regex("([0-9.]+)(ms|h|m|s)").findAll(mt.groupValues[1])) {
+            val n = x.groupValues[1].toDoubleOrNull() ?: continue
+            total += when (x.groupValues[2]) {
+                "h" -> n * 3600000.0
+                "m" -> n * 60000.0
+                "s" -> n * 1000.0
+                else -> n
+            }
+        }
+        if (total <= 0.0) return 15000L
+        return total.toLong() + 500L
+    }
+
     private fun explain(r: BinResult): String {
         if (r.code == -1) return if (r.text == "offline") "مفيش اتصال بالإنترنت" else "تعذر الاتصال بـ Groq"
         if (r.code == -3) return "انتهت مهلة الاتصال بـ Groq، جرّب مرة أخرى"
@@ -150,10 +167,17 @@ object GroqTts {
             progress("جاري تحويل الجزء " + (i + 1) + " من " + parts.size + " (Groq)")
             val body = JSONObject().put("model", model).put("input", parts[i]).put("voice", v).put("response_format", "wav").toString()
             var r = Http.postBinary(URL, body, headers, 60000)
-            if (r.code == 429) {
-                // محاولة واحدة إضافية بعد انتظار قصير
-                var waited = 0
-                while (waited < 4000 && !cancel()) {
+            // لو Groq طلب الانتظار (حد الطلبات في الدقيقة) ننتظر المدة اللي يحددها ونكمل، بدل ما نفشل
+            var tries = 0
+            while (r.code == 429 && tries < 4) {
+                tries++
+                val waitMs = retryWaitMs(r.text)
+                if (waitMs > 90000L) {
+                    return TtsOut(null, 24000, "حصة Groq خلصت، جرّب بعد " + (waitMs / 60000L + 1) + " دقيقة تقريبًا (وقفنا عند الجزء " + (i + 1) + " من " + parts.size + ")")
+                }
+                progress("حصة Groq مؤقتًا خلصت، بانتظر " + (waitMs / 1000L + 1) + " ثانية ثم أكمل (الجزء " + (i + 1) + " من " + parts.size + ")")
+                var waited = 0L
+                while (waited < waitMs && !cancel()) {
                     Thread.sleep(250)
                     waited += 250
                 }

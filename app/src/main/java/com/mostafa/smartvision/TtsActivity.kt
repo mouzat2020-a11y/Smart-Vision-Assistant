@@ -51,11 +51,12 @@ class TtsActivity : Activity() {
         val en = Store.ttsEngine()
         val eng = if (en == "system") "صوت النظام" else if (en == "groq") "Groq" else "Gemini"
         val voiceShown = if (en == "groq") Store.groqVoice() + " (Groq)" else Store.ttsVoice() + " (" + vd + ")"
+        val styleBits = if (en == "groq") "" else ". الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first + ". اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first +
+            ". السرعة: " + Prompts.PACE[Store.ttsPace()].first
         val tr = if (Store.ttsTranslateOn()) "مفعّلة إلى " + Prompts.LANGS[Store.ttsLang()].first else "معطّلة"
         val fx = if (Store.fxOn()) "مفعّل" else "معطّل"
         summary.text = "المحرك: " + eng + ". الصوت: " + voiceShown + ". عدد الأصوات: " + Store.nVoices() +
-            ". الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first + ". اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first +
-            ". السرعة: " + Prompts.PACE[Store.ttsPace()].first + ". الترجمة: " + tr + ". المزج مع الموسيقى: " + fx
+            styleBits + ". الترجمة: " + tr + ". المزج مع الموسيقى: " + fx
     }
 
     // إلغاء حقيقي: يقطع الاتصال الجاري ولا يكمل أي محاولة بعده

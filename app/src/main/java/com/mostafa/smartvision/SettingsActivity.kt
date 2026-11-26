@@ -475,10 +475,12 @@ class SettingsActivity : Activity() {
         var vd = ""
         for (x in Prompts.VOICES) if (x.first == Store.ttsVoice()) vd = x.second
         p.button(voiceLine(vd)) { chooseVoice() }
-        p.button("الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first) { chooseEmotion() }
-        p.button("اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first) { chooseAccent() }
-        p.button("سرعة الكلام: " + Prompts.PACE[Store.ttsPace()].first) { choosePace() }
-        p.button("نموذج الصوت: " + ttsModelLabel()) { chooseTtsModel() }
+        if (Store.ttsEngine() != "groq") {
+            p.button("الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first) { chooseEmotion() }
+            p.button("اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first) { chooseAccent() }
+            p.button("سرعة الكلام: " + Prompts.PACE[Store.ttsPace()].first) { choosePace() }
+            p.button("نموذج الصوت: " + ttsModelLabel()) { chooseTtsModel() }
+        }
         p.button("تجربة الصوت الحالي") { playSample() }
         p.button("سرعة القراءة بمحرك النظام وإعداداته") { open("reading") }
         p.section("الأصوات المتعددة")
@@ -543,10 +545,12 @@ class SettingsActivity : Activity() {
         var vd = ""
         for (x in Prompts.VOICES) if (x.first == Store.ttsVoice()) vd = x.second
         p.button(voiceLine(vd)) { chooseVoice() }
-        p.button("الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first) { chooseEmotion() }
-        p.button("اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first) { chooseAccent() }
-        p.button("سرعة الكلام: " + Prompts.PACE[Store.ttsPace()].first) { choosePace() }
-        p.button("نموذج الصوت: " + ttsModelLabel()) { chooseTtsModel() }
+        if (Store.ttsEngine() != "groq") {
+            p.button("الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first) { chooseEmotion() }
+            p.button("اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first) { chooseAccent() }
+            p.button("سرعة الكلام: " + Prompts.PACE[Store.ttsPace()].first) { choosePace() }
+            p.button("نموذج الصوت: " + ttsModelLabel()) { chooseTtsModel() }
+        }
         p.button("لغة الترجمة قبل التحويل: " + Prompts.LANGS[Store.ttsLang()].first) { chooseLang() }
         val nv = Store.nVoices()
         p.button("عدد الأصوات: " + (if (nv <= 1) "صوت واحد" else nv.toString())) { chooseNVoices() }
@@ -585,7 +589,9 @@ class SettingsActivity : Activity() {
         if (n > 1) {
             p.button("اختيار الأصوات الإضافية: " + TtsEngine.activeVoices().joinToString("، ")) { chooseExtraVoices(n) }
         }
-        p.button("نموذج Gemini للصوت: " + ttsModelLabel()) { chooseTtsModel() }
+        if (Store.ttsEngine() != "groq") {
+            p.button("نموذج Gemini للصوت: " + ttsModelLabel()) { chooseTtsModel() }
+        }
         p.button("نموذج الترجمة: " + trModelLabel()) { chooseTrModel() }
         p.button("إعادة تجربة نماذج Gemini اللي حصتها خلصت") {
             Store.saveBad(HashMap<String, Long>())
