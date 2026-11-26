@@ -947,7 +947,16 @@ object Http {
             c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             val code = c.responseCode
             val stream = if (code in 200..299) c.inputStream else c.errorStream
-            val text = if (stream == null) "" else stream.bufferedReader().use { it.readText() }
+            var text = ""
+            if (stream != null) {
+                // حد أقصى لحجم الرد حتى لا يمتلئ الذاكرة لو رجع الخادم شيئًا ضخمًا
+                val raw = stream.use { readLimited(it, 32 * 1024 * 1024) }
+                if (raw == null) {
+                    Usage.record(kind, false)
+                    return HttpResult(-1, "حجم رد الخادم أكبر من الحد المسموح")
+                }
+                text = String(raw, Charsets.UTF_8)
+            }
             Usage.record(kind, code in 200..299)
             return HttpResult(code, if (code in 200..299) text else scrub(text, secrets))
         } catch (e: Exception) {

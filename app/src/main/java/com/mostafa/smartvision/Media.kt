@@ -147,6 +147,9 @@ object Files {
 object Speaker : TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = null
     private var app: Context? = null
+    // 0 = لسه بيجهز، 1 = جاهز، -1 = فشل التجهيز
+    @Volatile private var initState = 0
+    @Volatile private var failToastAt = 0L
 
     fun init(ctx: Context) {
         if (tts != null) return
@@ -156,6 +159,7 @@ object Speaker : TextToSpeech.OnInitListener {
 
     private fun start(engine: String) {
         val a = app ?: return
+        initState = 0
         tts = if (engine.isEmpty()) TextToSpeech(a, this) else TextToSpeech(a, this, engine)
     }
 
@@ -168,6 +172,7 @@ object Speaker : TextToSpeech.OnInitListener {
     }
 
     override fun onInit(status: Int) {
+        initState = if (status == TextToSpeech.SUCCESS) 1 else -1
         if (status == TextToSpeech.SUCCESS) {
             tts?.setLanguage(Locale("ar"))
             tts?.setSpeechRate(Store.rate())
@@ -202,6 +207,18 @@ object Speaker : TextToSpeech.OnInitListener {
     fun speak(text: String) {
         val t = tts ?: return
         if (text.isBlank()) return
+        if (initState == -1) {
+            // محرك النطق في الهاتف فشل في التجهيز: نخبر المستخدم بدل الصمت (مرة كل 10 ثواني على الأكثر)
+            val now = System.currentTimeMillis()
+            val a = app
+            if (a != null && now - failToastAt > 10000L) {
+                failToastAt = now
+                Handler(Looper.getMainLooper()).post {
+                    android.widget.Toast.makeText(a, "محرك النطق في الهاتف غير جاهز. جرّب اختيار محرك آخر من إعدادات القراءة", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+            return
+        }
         t.stop()
         val parts = split(text, 3000)
         for (i in parts.indices) {
@@ -235,8 +252,10 @@ object AudioPlayer {
 
     fun play(path: String, onDone: () -> Unit): Boolean {
         stop()
+        var created: MediaPlayer? = null
         try {
             val mp = MediaPlayer()
+            created = mp
             try {
                 mp.setAudioAttributes(
                     AudioAttributes.Builder()
@@ -261,6 +280,9 @@ object AudioPlayer {
             player = mp
             return true
         } catch (e: Exception) {
+            // لو فشل التجهيز (ملف تالف مثلًا) نحرر المشغّل بدل تركه معلقًا
+            val c = created
+            if (c != null && player !== c) release(c)
             return false
         }
     }
