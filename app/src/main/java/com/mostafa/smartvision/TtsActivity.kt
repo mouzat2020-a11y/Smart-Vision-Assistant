@@ -10,6 +10,8 @@ import kotlin.concurrent.thread
 
 // شاشة تحويل النص إلى صوت (القائمة على نمط إضافة تحويل النص لصوت)
 class TtsActivity : Activity() {
+    // علامة هذه الشاشة: إلغاء طلباتها لا يقطع طلبات شاشة أخرى
+    private val ownerTag = "tts" + System.identityHashCode(this)
     private lateinit var status: TextView
     private lateinit var summary: TextView
     private lateinit var input: EditText
@@ -57,7 +59,7 @@ class TtsActivity : Activity() {
     // إلغاء حقيقي: يقطع الاتصال الجاري ولا يكمل أي محاولة بعده
     private fun cancelConvert() {
         token++
-        Http.cancelAll()
+        Http.cancelOwner(ownerTag)
         status.text = "تم إلغاء التحويل"
     }
 
@@ -130,7 +132,7 @@ class TtsActivity : Activity() {
         Speaker.stop()
         AudioPlayer.stop()
         val appCtx = applicationContext
-        thread {
+        Http.thread(ownerTag) {
           try {
             var text = txt
             if (doTranslate) {
@@ -270,7 +272,7 @@ class TtsActivity : Activity() {
 
     override fun onDestroy() {
         token++
-        Http.cancelAll()
+        Http.cancelOwner(ownerTag)
         Speaker.stop()
         super.onDestroy()
     }

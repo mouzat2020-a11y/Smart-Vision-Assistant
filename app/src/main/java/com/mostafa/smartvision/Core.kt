@@ -782,16 +782,47 @@ object AudioCheck {
 class HttpResult(val code: Int, val body: String)
 
 object Http {
-    private val live = HashSet<HttpURLConnection>()
+    private class Live(val conn: HttpURLConnection, val tag: String)
+    private val live = HashSet<Live>()
+    private val tagGen = HashMap<String, Int>()
     @Volatile private var cancelGen = 0
 
-    // يقطع كل الاتصالات الجارية فورًا (زر الإلغاء أو الخروج من الشاشة)
+    // علامة الشاشة صاحبة الطلب. تنتقل تلقائيًا للخيوط التي ينشئها خيط الشاشة (مثل سباق النماذج)
+    val owner = InheritableThreadLocal<String?>()
+
+    // يبدأ خيطًا جانبيًا موسومًا بعلامة الشاشة، فتُنسب إليه كل طلباته
+    fun thread(tag: String, block: () -> Unit): Thread {
+        return kotlin.concurrent.thread {
+            owner.set(tag)
+            block()
+        }
+    }
+
+    // يقطع طلبات شاشة واحدة فقط، ولا يمس طلبات الشاشات الأخرى
+    fun cancelOwner(tag: String) {
+        val copy = synchronized(live) {
+            tagGen[tag] = (tagGen[tag] ?: 0) + 1
+            live.filter { it.tag == tag }
+        }
+        for (l in copy) {
+            try { l.conn.disconnect() } catch (e: Exception) { }
+        }
+    }
+
+    // يقطع كل الاتصالات الجارية فورًا (يُستخدم عند الحاجة لقطع كل شيء)
     fun cancelAll() {
         cancelGen++
         val copy = synchronized(live) { ArrayList(live) }
-        for (c in copy) {
-            try { c.disconnect() } catch (e: Exception) { }
+        for (l in copy) {
+            try { l.conn.disconnect() } catch (e: Exception) { }
         }
+    }
+
+    private fun tagGenOf(tag: String): Int = synchronized(live) { tagGen[tag] ?: 0 }
+
+    private fun isCancelled(gen: Int, tag: String, tg: Int): Boolean {
+        if (cancelGen != gen) return true
+        return tag.isNotEmpty() && tagGenOf(tag) != tg
     }
 
     // أسرار الترويسات (مفتاح Gemini أو Authorization) لإخفائها من أي نص خطأ
@@ -827,12 +858,15 @@ object Http {
         // بدون إنترنت: نرجع فورًا بدل انتظار مهلة الاتصال
         if (!Net.isOnline()) return HttpResult(-1, "offline")
         val gen = cancelGen
-        var conn: HttpURLConnection? = null
+        val tag = owner.get() ?: ""
+        val tg = tagGenOf(tag)
+        var rec: Live? = null
         try {
             val c = URL(url).openConnection() as HttpURLConnection
-            conn = c
-            synchronized(live) { live.add(c) }
-            if (cancelGen != gen) return HttpResult(-2, "cancelled")
+            val r = Live(c, tag)
+            rec = r
+            synchronized(live) { live.add(r) }
+            if (isCancelled(gen, tag, tg)) return HttpResult(-2, "cancelled")
             c.requestMethod = "POST"
             c.doOutput = true
             c.connectTimeout = 10000
@@ -846,15 +880,15 @@ object Http {
             Usage.record(kind, code in 200..299)
             return HttpResult(code, if (code in 200..299) text else scrub(text, secrets))
         } catch (e: Exception) {
-            if (cancelGen != gen) return HttpResult(-2, "cancelled")
+            if (isCancelled(gen, tag, tg)) return HttpResult(-2, "cancelled")
             Usage.record(kind, false)
             if (e is java.net.SocketTimeoutException) return HttpResult(-3, "timeout")
             return HttpResult(-1, scrub(e.message ?: e.javaClass.simpleName, secrets))
         } finally {
-            val c2 = conn
-            if (c2 != null) {
-                synchronized(live) { live.remove(c2) }
-                try { c2.disconnect() } catch (e: Exception) { }
+            val r2 = rec
+            if (r2 != null) {
+                synchronized(live) { live.remove(r2) }
+                try { r2.conn.disconnect() } catch (e: Exception) { }
             }
         }
     }

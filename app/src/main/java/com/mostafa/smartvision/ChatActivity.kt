@@ -5,6 +5,8 @@ import android.os.Bundle
 import kotlin.concurrent.thread
 
 class ChatActivity : Activity() {
+    // علامة هذه الشاشة: إلغاء طلباتها لا يقطع طلبات شاشة أخرى
+    private val ownerTag = "chat" + System.identityHashCode(this)
     private var sending = false
     private var token = 0
 
@@ -35,7 +37,7 @@ class ChatActivity : Activity() {
                 e.setText("")
                 log.text = "جاري الرد..."
                 hist.add(Msg("user", q))
-                thread {
+                Http.thread(ownerTag) {
                     val r = Ai.ask(hist, { my != token }, { })
                     runOnUiThread {
                         if (my != token) return@runOnUiThread
@@ -56,7 +58,7 @@ class ChatActivity : Activity() {
         p.button("إيقاف الرد الجاري") {
             if (sending) {
                 token++
-                Http.cancelAll()
+                Http.cancelOwner(ownerTag)
                 sending = false
                 if (hist.isNotEmpty() && hist[hist.size - 1].role == "user") hist.removeAt(hist.size - 1)
                 log.text = "تم إيقاف الرد"
@@ -76,7 +78,7 @@ class ChatActivity : Activity() {
 
     override fun onDestroy() {
         token++
-        Http.cancelAll()
+        Http.cancelOwner(ownerTag)
         Speaker.stop()
         super.onDestroy()
     }

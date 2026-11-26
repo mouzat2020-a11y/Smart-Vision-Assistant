@@ -13,6 +13,8 @@ import java.io.File
 import kotlin.concurrent.thread
 
 class WorkActivity : Activity() {
+    // علامة هذه الشاشة: إلغاء طلباتها لا يقطع طلبات شاشة أخرى
+    private val ownerTag = "work" + System.identityHashCode(this)
     private var mode = ""
     private var source = ""
     private var extra = ""
@@ -46,7 +48,7 @@ class WorkActivity : Activity() {
         Ui.live(status)
         p.bottomButton("إيقاف والرجوع") {
             token++
-            Http.cancelAll()
+            Http.cancelOwner(ownerTag)
             finish()
         }
         if (mode == "write" || mode == "translate_text" || mode == "ask") {
@@ -201,7 +203,7 @@ class WorkActivity : Activity() {
         token++
         val my = token
         status.text = "جاري تجهيز الصورة"
-        thread {
+        Http.thread(ownerTag) {
             val images = ArrayList<String>()
             if (bmp != null) images.add(Img.bitmapB64(bmp))
             for (u in uris) {
@@ -277,7 +279,7 @@ class WorkActivity : Activity() {
         token++
         val my = token
         status.text = "جاري التنفيذ"
-        thread {
+        Http.thread(ownerTag) {
             val r = Ai.ask(listOf(Msg("user", full)), { my != token }, { m -> runOnUiThread { if (my == token) status.text = m } })
             runOnUiThread {
                 if (my == token) {
@@ -309,7 +311,7 @@ class WorkActivity : Activity() {
 
     override fun onDestroy() {
         token++
-        Http.cancelAll()
+        Http.cancelOwner(ownerTag)
         super.onDestroy()
     }
 }

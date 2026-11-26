@@ -9,6 +9,8 @@ import java.io.File
 import kotlin.concurrent.thread
 
 class SettingsActivity : Activity() {
+    // علامة هذه الشاشة: إلغاء طلباتها لا يقطع طلبات شاشة أخرى
+    private val ownerTag = "settings" + System.identityHashCode(this)
 
     private var pageName = "main"
     private var keyField: EditText? = null
@@ -190,7 +192,7 @@ class SettingsActivity : Activity() {
         testToken++
         val my = testToken
         Ui.toast(this, "جاري اختبار الاتصال")
-        thread {
+        Http.thread(ownerTag) {
             val r = Ai.askProvider(pr, listOf(Msg("user", "Reply with exactly: OK")), { my != testToken }, { })
             runOnUiThread {
                 val t = r.text
@@ -763,7 +765,7 @@ class SettingsActivity : Activity() {
         Speaker.stop()
         AudioPlayer.stop()
         Ui.toast(this, "جاري تجهيز العينة")
-        thread {
+        Http.thread(ownerTag) {
             try {
                 val pcm = Fx.preview(type, id, 24000)
                 if (my != testToken) return@thread
@@ -796,7 +798,7 @@ class SettingsActivity : Activity() {
         }
         Ui.toast(this, "جاري المزج")
         val rate = Session.lastRate
-        thread {
+        Http.thread(ownerTag) {
             try {
                 val mixed = Fx.mix(pcm, rate, Store.fxMusic(), Store.fxAmb1(), Store.fxAmb2(),
                     Store.fxVol(0), Store.fxVol(1), Store.fxVol(2), Store.fxIntro(), Store.fxOutro())
@@ -879,9 +881,9 @@ class SettingsActivity : Activity() {
         val my = testToken
         Speaker.stop()
         AudioPlayer.stop()
-        Http.cancelAll()
+        Http.cancelOwner(ownerTag)
         Ui.toast(this, "جاري تجهيز العينة")
-        thread {
+        Http.thread(ownerTag) {
             val out = TtsEngine.synthChunk("أهلًا بك، هذه تجربة بسيطة للصوت الذي سيقرأ لك النص.", Store.ttsVoice(), TtsEngine.styleText(), { my != testToken }, { })
             val pcm = out.pcm
             runOnUiThread {

@@ -18,6 +18,8 @@ import kotlin.concurrent.thread
 
 // قراءة ملفات PDF: كل صفحة تتحوّل لصورة وتُرسَل للذكاء الاصطناعي ليقرأ نصها
 class PdfActivity : Activity() {
+    // علامة هذه الشاشة: إلغاء طلباتها لا يقطع طلبات شاشة أخرى
+    private val ownerTag = "pdf" + System.identityHashCode(this)
     private lateinit var status: TextView
     private lateinit var body: TextView
     private lateinit var pageBox: EditText
@@ -117,7 +119,7 @@ class PdfActivity : Activity() {
 
     private fun openPdf(uri: Uri) {
         token++
-        Http.cancelAll()
+        Http.cancelOwner(ownerTag)
         Speaker.stop()
         status.text = "جاري فتح الملف"
         body.text = ""
@@ -125,7 +127,7 @@ class PdfActivity : Activity() {
         count = 0
         cur = 0
         val my = token
-        thread {
+        Http.thread(ownerTag) {
             var name = "ملف PDF"
             try {
                 val c = contentResolver.query(uri, null, null, null, null)
@@ -222,7 +224,7 @@ class PdfActivity : Activity() {
 
     private fun readPage(index: Int, force: Boolean) {
         token++
-        Http.cancelAll()
+        Http.cancelOwner(ownerTag)
         Speaker.stop()
         val my = token
         cur = index
@@ -233,7 +235,7 @@ class PdfActivity : Activity() {
         }
         status.text = "جاري قراءة الصفحة " + (index + 1) + " من " + count
         body.text = ""
-        thread {
+        Http.thread(ownerTag) {
             val b64 = renderB64(index)
             if (b64 == null) {
                 runOnUiThread { if (my == token) status.text = "تعذر تجهيز الصفحة " + (index + 1) }
@@ -277,13 +279,13 @@ class PdfActivity : Activity() {
     // يقرأ من الصفحة الحالية حتى 30 صفحة في المرة، ويوقف عند أول خطأ
     private fun readAll() {
         token++
-        Http.cancelAll()
+        Http.cancelOwner(ownerTag)
         Speaker.stop()
         val my = token
         val start = cur
         val end = minOf(count, start + 30)
         body.text = ""
-        thread {
+        Http.thread(ownerTag) {
             val sb = StringBuilder()
             for (i in start until end) {
                 if (my != token) return@thread
@@ -340,7 +342,7 @@ class PdfActivity : Activity() {
 
     private fun cancelRead() {
         token++
-        Http.cancelAll()
+        Http.cancelOwner(ownerTag)
         Speaker.stop()
         status.text = "تم إيقاف القراءة"
     }
@@ -359,7 +361,7 @@ class PdfActivity : Activity() {
             return
         }
         status.text = "جاري تجهيز الصفحة للدردشة"
-        thread {
+        Http.thread(ownerTag) {
             val b64 = renderB64(idx)
             runOnUiThread {
                 if (b64 == null) {
@@ -382,7 +384,7 @@ class PdfActivity : Activity() {
 
     override fun onDestroy() {
         token++
-        Http.cancelAll()
+        Http.cancelOwner(ownerTag)
         Speaker.stop()
         // نمسح نسخة الملف المؤقتة من الجهاز عند الخروج
         try {
