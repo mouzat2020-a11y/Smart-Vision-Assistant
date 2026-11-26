@@ -474,7 +474,7 @@ class SettingsActivity : Activity() {
         p.button("المحرك: " + engineLabel()) { chooseTtsEngine() }
         var vd = ""
         for (x in Prompts.VOICES) if (x.first == Store.ttsVoice()) vd = x.second
-        p.button("الصوت: " + Store.ttsVoice() + " - " + vd) { chooseVoice() }
+        p.button(voiceLine(vd)) { chooseVoice() }
         p.button("الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first) { chooseEmotion() }
         p.button("اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first) { chooseAccent() }
         p.button("سرعة الكلام: " + Prompts.PACE[Store.ttsPace()].first) { choosePace() }
@@ -518,7 +518,17 @@ class SettingsActivity : Activity() {
     }
 
     private fun engineLabel(): String {
-        return if (Store.ttsEngine() == "system") "صوت النظام" else "Gemini"
+        val e = Store.ttsEngine()
+        return if (e == "system") "صوت النظام" else if (e == "groq") "Groq" else "Gemini"
+    }
+
+    private fun voiceLine(geminiDesc: String): String {
+        if (Store.ttsEngine() == "groq") {
+            var d = ""
+            for (x in GroqTts.VOICES_AR) if (x.first == Store.groqVoice()) d = x.second
+            return "الصوت: " + Store.groqVoice() + " - " + d
+        }
+        return "الصوت: " + Store.ttsVoice() + " - " + geminiDesc
     }
 
     private fun ttsModelLabel(): String {
@@ -532,7 +542,7 @@ class SettingsActivity : Activity() {
         p.button("المحرك: " + engineLabel()) { chooseTtsEngine() }
         var vd = ""
         for (x in Prompts.VOICES) if (x.first == Store.ttsVoice()) vd = x.second
-        p.button("الصوت: " + Store.ttsVoice() + " - " + vd) { chooseVoice() }
+        p.button(voiceLine(vd)) { chooseVoice() }
         p.button("الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first) { chooseEmotion() }
         p.button("اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first) { chooseAccent() }
         p.button("سرعة الكلام: " + Prompts.PACE[Store.ttsPace()].first) { choosePace() }
@@ -594,8 +604,8 @@ class SettingsActivity : Activity() {
     }
 
     private fun chooseTtsEngine() {
-        Ui.choose(this, "محرك التحويل", listOf("Gemini (أصوات ذكاء اصطناعي)", "صوت النظام (محرك نطق الهاتف)")) { i ->
-            Store.setTtsEngine(if (i == 0) "gemini" else "system")
+        Ui.choose(this, "محرك التحويل", listOf("Gemini (أصوات ذكاء اصطناعي)", "صوت النظام (محرك نطق الهاتف)", "Groq (أصوات Orpheus، العربية بلهجة سعودية)")) { i ->
+            Store.setTtsEngine(if (i == 0) "gemini" else if (i == 1) "system" else "groq")
             build()
         }
     }
@@ -817,6 +827,16 @@ class SettingsActivity : Activity() {
     }
 
     private fun chooseVoice() {
+        if (Store.ttsEngine() == "groq") {
+            val gl = ArrayList<String>()
+            for (x in GroqTts.VOICES_AR) gl.add(x.first + " - " + x.second)
+            Ui.choose(this, "اختيار صوت Groq", gl) { i ->
+                Store.setGroqVoice(GroqTts.VOICES_AR[i].first)
+                build()
+                playSample()
+            }
+            return
+        }
         val labels = ArrayList<String>()
         for (x in Prompts.VOICES) labels.add(x.first + " - " + x.second)
         Ui.choose(this, "اختيار الصوت", labels) { i ->
@@ -872,7 +892,13 @@ class SettingsActivity : Activity() {
     }
 
     private fun playSample() {
-        if (!Store.hasKey("gemini")) {
+        val groq = Store.ttsEngine() == "groq"
+        if (groq) {
+            if (!Store.hasKey("groq")) {
+                Ui.toast(this, "تجربة الصوت تحتاج مفتاح Groq")
+                return
+            }
+        } else if (!Store.hasKey("gemini")) {
             Ui.toast(this, "تجربة الصوت تحتاج مفتاح Gemini")
             return
         }
@@ -884,7 +910,12 @@ class SettingsActivity : Activity() {
         Http.cancelOwner(ownerTag)
         Ui.toast(this, "جاري تجهيز العينة")
         Http.thread(ownerTag) {
-            val out = TtsEngine.synthChunk("أهلًا بك، هذه تجربة بسيطة للصوت الذي سيقرأ لك النص.", Store.ttsVoice(), TtsEngine.styleText(), { my != testToken }, { })
+            val sampleText = "أهلًا بك، هذه تجربة بسيطة للصوت الذي سيقرأ لك النص."
+            val out = if (groq) {
+                GroqTts.synth(sampleText, Store.groqVoice(), { my != testToken }, { })
+            } else {
+                TtsEngine.synthChunk(sampleText, Store.ttsVoice(), TtsEngine.styleText(), { my != testToken }, { })
+            }
             val pcm = out.pcm
             runOnUiThread {
                 // لو بدأت تجربة أحدث نتجاهل هذه العينة القديمة ولا نشغّلها

@@ -48,10 +48,12 @@ class TtsActivity : Activity() {
         super.onResume()
         var vd = ""
         for (x in Prompts.VOICES) if (x.first == Store.ttsVoice()) vd = x.second
-        val eng = if (Store.ttsEngine() == "system") "صوت النظام" else "Gemini"
+        val en = Store.ttsEngine()
+        val eng = if (en == "system") "صوت النظام" else if (en == "groq") "Groq" else "Gemini"
+        val voiceShown = if (en == "groq") Store.groqVoice() + " (Groq)" else Store.ttsVoice() + " (" + vd + ")"
         val tr = if (Store.ttsTranslateOn()) "مفعّلة إلى " + Prompts.LANGS[Store.ttsLang()].first else "معطّلة"
         val fx = if (Store.fxOn()) "مفعّل" else "معطّل"
-        summary.text = "المحرك: " + eng + ". الصوت: " + Store.ttsVoice() + " (" + vd + "). عدد الأصوات: " + Store.nVoices() +
+        summary.text = "المحرك: " + eng + ". الصوت: " + voiceShown + ". عدد الأصوات: " + Store.nVoices() +
             ". الانفعال: " + Prompts.EMO[Store.ttsEmotion()].first + ". اللهجة: " + Prompts.ACCENTS[Store.ttsAccent()].first +
             ". السرعة: " + Prompts.PACE[Store.ttsPace()].first + ". الترجمة: " + tr + ". المزج مع الموسيقى: " + fx
     }
@@ -122,7 +124,12 @@ class TtsActivity : Activity() {
         }
         val doTranslate = translateNow || Store.ttsTranslateOn()
         val isSystem = Store.ttsEngine() == "system"
-        if (!isSystem && !Store.hasKey("gemini")) {
+        val isGroq = Store.ttsEngine() == "groq"
+        if (isGroq && !Store.hasKey("groq")) {
+            Ui.message(this, "مفتاح Groq", "التحويل بأصوات Groq يحتاج مفتاح Groq، أضفه من الإعدادات. أو اختر محركًا آخر من الإعدادات المتقدمة.")
+            return
+        }
+        if (!isSystem && !isGroq && !Store.hasKey("gemini")) {
             Ui.message(this, "مفتاح Gemini", "التحويل بأصوات Gemini يحتاج مفتاح Gemini، أضفه من الإعدادات. أو اختر محرك صوت النظام من الإعدادات المتقدمة.")
             return
         }
@@ -151,6 +158,8 @@ class TtsActivity : Activity() {
             // محرك النظام: يولّد ملفًا ويحوّله لنفس شكل ناتج Gemini، ثم يكمل نفس المسار (فحص، مزج، حفظ، تشغيل)
             val out = if (isSystem) {
                 SystemTts.synth(appCtx, text, { my != token }, { m -> post(my, m) })
+            } else if (isGroq) {
+                GroqTts.synth(text, Store.groqVoice(), { my != token }, { m -> post(my, m) })
             } else {
                 TtsEngine.synthMulti(text, TtsEngine.activeVoices(), Store.mixMode(), TtsEngine.styleText(), { my != token }, { m -> post(my, m) })
             }

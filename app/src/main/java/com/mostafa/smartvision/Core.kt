@@ -370,6 +370,9 @@ object Store {
     fun setFxOutro(v: Int) { prefs().edit().putInt("fx_outro", v).apply() }
 
     // ---- إعدادات تحويل النص لصوت ----
+    // صوت Groq (محرك Orpheus) منفصل عن أصوات Gemini حتى لا يضيع اختيارك لأي منهما
+    fun groqVoice(): String { return prefs().getString("t_gvoice", "fahad") ?: "fahad" }
+    fun setGroqVoice(v: String) { prefs().edit().putString("t_gvoice", v).apply() }
     fun ttsVoice(): String { return prefs().getString("t_voice", "Kore") ?: "Kore" }
     fun setTtsVoice(v: String) { prefs().edit().putString("t_voice", v).apply() }
     fun ttsEmotion(): Int { return prefs().getInt("t_emo", 0).coerceIn(0, Prompts.EMO.size - 1) }
@@ -781,6 +784,9 @@ object AudioCheck {
 // ================== الاتصال بالإنترنت ==================
 class HttpResult(val code: Int, val body: String)
 
+// نتيجة طلب يرجع بيانات ثنائية (ملف صوت مثلًا). عند الخطأ: bytes فارغة والرسالة في text
+class BinResult(val code: Int, val bytes: ByteArray?, val text: String)
+
 object Http {
     private class Live(val conn: HttpURLConnection, val tag: String)
     private val live = HashSet<Live>()
@@ -848,6 +854,71 @@ object Http {
         if (url.contains("api.groq.com")) return "groq"
         if (url.contains("openrouter.ai")) return "openrouter"
         return "other"
+    }
+
+    // طلب مثل post لكنه يرجع بيانات ثنائية (للصوت). نفس قواعد الإلغاء والإخفاء، وحد أقصى لحجم الرد
+    fun postBinary(url: String, body: String, headers: Map<String, String>, readMs: Int): BinResult {
+        if (!url.startsWith("https://")) return BinResult(-1, null, "تم رفض الاتصال لأنه غير مشفّر")
+        val secrets = secretsOf(headers)
+        val kind = kindOf(url)
+        if (!Net.isOnline()) return BinResult(-1, null, "offline")
+        val gen = cancelGen
+        val tag = owner.get() ?: ""
+        val tg = tagGenOf(tag)
+        var rec: Live? = null
+        try {
+            val c = URL(url).openConnection() as HttpURLConnection
+            val r = Live(c, tag)
+            rec = r
+            synchronized(live) { live.add(r) }
+            if (isCancelled(gen, tag, tg)) return BinResult(-2, null, "cancelled")
+            c.requestMethod = "POST"
+            c.doOutput = true
+            c.connectTimeout = 10000
+            c.readTimeout = readMs
+            c.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            for ((k, v) in headers) c.setRequestProperty(k, v)
+            c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val code = c.responseCode
+            if (code in 200..299) {
+                val bytes = c.inputStream.use { readLimited(it, 40 * 1024 * 1024) }
+                if (bytes == null) {
+                    Usage.record(kind, false)
+                    return BinResult(-1, null, "حجم رد الخادم أكبر من الحد المسموح")
+                }
+                Usage.record(kind, true)
+                return BinResult(code, bytes, "")
+            }
+            val es = c.errorStream
+            val text = if (es == null) "" else es.bufferedReader().use { it.readText() }
+            Usage.record(kind, false)
+            return BinResult(code, null, scrub(text, secrets))
+        } catch (e: Exception) {
+            if (isCancelled(gen, tag, tg)) return BinResult(-2, null, "cancelled")
+            Usage.record(kind, false)
+            if (e is java.net.SocketTimeoutException) return BinResult(-3, null, "timeout")
+            return BinResult(-1, null, scrub(e.message ?: e.javaClass.simpleName, secrets))
+        } finally {
+            val r2 = rec
+            if (r2 != null) {
+                synchronized(live) { live.remove(r2) }
+                try { r2.conn.disconnect() } catch (e: Exception) { }
+            }
+        }
+    }
+
+    private fun readLimited(ins: java.io.InputStream, limit: Int): ByteArray? {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0
+        while (true) {
+            val n = ins.read(buf)
+            if (n < 0) break
+            total += n
+            if (total > limit) return null
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
     }
 
     // أكواد خاصة: -1 لا يوجد اتصال، -2 إلغاء المستخدم، -3 انتهت المهلة
