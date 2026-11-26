@@ -189,7 +189,14 @@ class TtsActivity : Activity() {
                 }
                 val fp = finalPath
                 runOnUiThread {
+                    if (my != token) {
+                        // تحويل أحدث حلّ محل هذا، فلا حاجة لملفاته
+                        try { dry.delete(); File(fp).delete() } catch (e: Exception) { }
+                    }
                     if (my == token) {
+                        // نحذف ملفات التحويلات السابقة ونبقي الجديدة فقط
+                        AudioPlayer.stop()
+                        cleanOldTts(dry.absolutePath, fp)
                         Session.lastDryPath = dry.absolutePath
                         Session.lastRate = out.rate
                         Session.lastAudioPath = fp
@@ -207,6 +214,16 @@ class TtsActivity : Activity() {
             else post(my, "تعذر التحويل بسبب خطأ غير متوقع. جرّب مرة أخرى.")
           }
         }
+    }
+
+    private fun cleanOldTts(keepA: String, keepB: String) {
+        try {
+            val fs = cacheDir.listFiles() ?: return
+            for (f in fs) {
+                if (f.isFile && f.name.startsWith("tts_") && f.name.endsWith(".wav") &&
+                    f.absolutePath != keepA && f.absolutePath != keepB) f.delete()
+            }
+        } catch (e: Exception) { }
     }
 
     private fun audioBytes(): ByteArray? {

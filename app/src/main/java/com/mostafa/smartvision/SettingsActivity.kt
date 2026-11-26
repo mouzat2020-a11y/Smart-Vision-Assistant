@@ -230,7 +230,7 @@ class SettingsActivity : Activity() {
 
     private fun opImages(): OpResult {
         val r = Privacy.delete(Privacy.imageFiles(this))
-        return OpResult("الصور المؤقتة", r.second == 0, "حُذف " + r.first + " ملف" + (if (r.second > 0) "، وتعذّر حذف " + r.second else ""))
+        return OpResult("الصور وملفات PDF المؤقتة", r.second == 0, "حُذف " + r.first + " ملف" + (if (r.second > 0) "، وتعذّر حذف " + r.second else ""))
     }
 
     private fun opAudio(): OpResult {
@@ -361,8 +361,8 @@ class SettingsActivity : Activity() {
         val p = Page(this, "مسح البيانات وإدارة الملفات")
         p.label("كل زر يطلب تأكيدًا قبل المسح، وبعده يخبرك بما حُذف وما تعذّر حذفه. الملفات التي حفظتها أنت في التنزيلات أو المعرض لا تُمسح أبدًا.")
         p.section("مسح كل نوع على حدة")
-        p.button("مسح الصور المؤقتة (" + imgInfo + ")") {
-            confirm("مسح الصور المؤقتة", "سيتم مسح " + imgInfo + " من الصور المؤقتة التي أنشأها التطبيق. صور المعرض لا تتأثر.", "نعم، امسح") {
+        p.button("مسح الصور وملفات PDF المؤقتة (" + imgInfo + ")") {
+            confirm("مسح الصور وملفات PDF المؤقتة", "سيتم مسح " + imgInfo + " من الصور وملفات PDF المؤقتة التي أنشأها التطبيق. صور المعرض لا تتأثر.", "نعم، امسح") {
                 report(listOf(opImages()))
             }
         }
@@ -394,7 +394,7 @@ class SettingsActivity : Activity() {
         p.section("مسح الكل")
         p.button("مسح بيانات التطبيق المحلية كلها") {
             val msg = "سيتم مسح الآتي:\n" +
-                "الصور المؤقتة: " + imgInfo + "\n" +
+                "الصور وملفات PDF المؤقتة: " + imgInfo + "\n" +
                 "ملفات الصوت المؤقتة: " + audInfo + "\n" +
                 "النتائج والترجمات المؤقتة في الذاكرة\n" +
                 "سجل النتائج المحفوظ: " + hc + " نتيجة\n" +

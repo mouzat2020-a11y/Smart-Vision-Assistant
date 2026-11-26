@@ -133,8 +133,21 @@ class WorkActivity : Activity() {
         }
         try {
             startActivityForResult(i, reqCam)
+        } catch (e: SecurityException) {
+            dropCamRow()
+            status.text = "تعذر فتح الكاميرا لأن إذن الكاميرا غير مفعّل للتطبيق. فعّله من إعدادات الهاتف ثم جرّب مرة أخرى"
         } catch (e: Exception) {
+            dropCamRow()
             status.text = "الكاميرا غير متاحة على هذا الجهاز"
+        }
+    }
+
+    // يحذف المدخل الفارغ الذي أنشأناه في المعرض قبل فتح كاميرا النظام، لو لم تُلتقط صورة
+    private fun dropCamRow() {
+        val u = camUri
+        camUri = null
+        if (u != null) {
+            try { contentResolver.delete(u, null, null) } catch (e: Exception) { }
         }
     }
 
@@ -153,6 +166,7 @@ class WorkActivity : Activity() {
             return
         }
         if (resultCode != RESULT_OK) {
+            if (requestCode == reqCam) dropCamRow()
             finish()
             return
         }

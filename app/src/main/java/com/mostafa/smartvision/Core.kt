@@ -521,9 +521,9 @@ object Privacy {
         return out
     }
 
-    // صور مؤقتة أنشأها التطبيق داخل الـ cache فقط (لا تشمل صور المعرض)
+    // صور ونسخ PDF مؤقتة أنشأها التطبيق داخل الـ cache فقط (لا تشمل صور المعرض)
     fun imageFiles(ctx: Context): List<File> {
-        return listCache(ctx) { n -> n.startsWith("cam_") || n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png") }
+        return listCache(ctx) { n -> n.startsWith("cam_") || n.startsWith("pdf_src") || n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png") }
     }
 
     // ملفات صوت مؤقتة داخل الـ cache فقط (لا تشمل ما حفظته في التنزيلات)
