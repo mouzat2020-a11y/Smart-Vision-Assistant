@@ -26,14 +26,21 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
+      - name: Prepare signing password
+        env:
+          RAW_KEY_PASSWORD: ${{ secrets.SV_KEY_PASSWORD }}
+        run: |
+          # ننظف كلمة السر من أي رموز مخفية أو غير إنجليزية دخلت أثناء النسخ واللصق
+          CLEAN=$(printf '%s' "$RAW_KEY_PASSWORD" | tr -cd 'A-Za-z0-9')
+          if [ -z "$CLEAN" ]; then
+            echo "SV_KEY_PASSWORD secret is missing or empty"
+            exit 1
+          fi
+          echo "SV_KEY_PASSWORD=$CLEAN" >> "$GITHUB_ENV"
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
-        env:
-          SV_KEY_PASSWORD: ${{ secrets.SV_KEY_PASSWORD }}
       - name: Build release APK
         run: gradle assembleRelease --stacktrace
-        env:
-          SV_KEY_PASSWORD: ${{ secrets.SV_KEY_PASSWORD }}
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
