@@ -10,6 +10,9 @@ import java.net.URLEncoder
 object NewsArticle {
     class Body(val text: String?, val reason: String)
 
+    // آخر سبب فشل في تحميل نص خبر (يظهر في الإعدادات: "عرض آخر خطأ")
+    @Volatile var lastError: String = ""
+
     private const val MAX_TEXT = 12000
     private val JUNK = listOf(
         "اقرأ أيضا", "اقرأ أيضًا", "اقرأ ايضا", "اشترك في", "جميع الحقوق", "تابعونا على",
@@ -18,7 +21,7 @@ object NewsArticle {
     private val FLAGS = setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
 
     fun load(item: NewsItem, ownerTag: String, cancel: () -> Boolean): Body {
-        if (item.full.length > 200) return Body(item.full, "")
+        if (item.fullOrig.length > 200) return Body(item.fullOrig, "")
         var url = item.link
         var reason = ""
         var lead = ""
@@ -57,6 +60,7 @@ object NewsArticle {
             reason = reason + " | القارئ الاحتياطي رد: " + j.code
         }
         if (lead.isNotEmpty()) return Body(lead, "")
+        lastError = reason + " | " + item.link
         return Body(null, "تعذر تحميل نص الخبر ($reason). افتح الخبر في المتصفح")
     }
 

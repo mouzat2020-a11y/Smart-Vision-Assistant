@@ -2,13 +2,13 @@ package com.mostafa.smartvision
 
 import java.net.URLEncoder
 
-// مصدر خبر واحد (جريدة أو قسم مقالات): روابط أساسية، وروابط احتياطية، وهل لغته أجنبية (تُترجم للعربية)
+// مصدر أو تصنيف: روابط أساسية، وروابط احتياطية، وهل لغته أجنبية (تُترجم للعربية)
 class NewsSource(val name: String, val urls: List<String>, val fallback: List<String>, val foreign: Boolean)
 
-// مجموعة مصادر تظهر في قائمة واحدة
-class NewsGroup(val title: String, val sources: List<NewsSource>, val hasForeign: Boolean)
+// قسم رئيسي (أخبار محلية، صحف عربية، مقالات عالمية...) وبداخله تصنيفات أو مصادر
+// kind: news أو papers أو articles
+class NewsSec(val name: String, val kind: String, val cats: List<NewsSource>)
 
-// الصحف والمقالات: محلية (حسب الدولة)، وعربية، وعالمية
 object NewsSources {
     private class Loc(val hl: String, val gl: String, val lang: String)
 
@@ -35,17 +35,71 @@ object NewsSources {
         return "https://news.google.com/rss/search?q=" + enc(q + " when:" + w) + "&hl=ar&gl=" + gl + "&ceid=" + gl + ":ar"
     }
 
+    private fun topicUrl(topic: String, gl: String): String {
+        return "https://news.google.com/rss/headlines/section/topic/" + topic + "?hl=ar&gl=" + gl + "&ceid=" + gl + ":ar"
+    }
+
     private fun src(name: String, direct: List<String>?, domain: String, q: String, loc: Loc, foreign: Boolean, w: String): NewsSource {
         val f = listOf(gs(domain, q, loc, w))
         if (direct != null && direct.isNotEmpty()) return NewsSource(name, direct, f, foreign)
         return NewsSource(name, f, emptyList(), foreign)
     }
 
-    private fun group(title: String, list: List<NewsSource>): NewsGroup {
-        var f = false
-        for (s in list) if (s.foreign) f = true
-        return NewsGroup(title, list, f)
+    private class CatDef(val name: String, val topic: String?, val q: String)
+
+    private val CAT_DEFS = listOf(
+        CatDef("سياسة", "NATION", "سياسة OR الحكومة OR الرئيس OR البرلمان OR وزير OR مجلس"),
+        CatDef("فن", "ENTERTAINMENT", "فنان OR فنانة OR مسلسل OR فيلم OR حفل OR مهرجان OR سينما OR ممثل OR مطرب"),
+        CatDef("رياضة", "SPORTS", "كرة القدم OR الدوري OR مباراة OR المنتخب OR لاعب OR كأس"),
+        CatDef("اقتصاد", "BUSINESS", "اقتصاد OR البورصة OR الدولار OR الأسعار OR الاستثمار OR البنك"),
+        CatDef("تقنية", "TECHNOLOGY", "تكنولوجيا OR تقنية OR هاتف OR الذكاء الاصطناعي OR تطبيق"),
+        CatDef("صحة", "HEALTH", "صحة OR مرض OR علاج OR مستشفى OR وزارة الصحة OR دواء"),
+        CatDef("حوادث", null, "حادث OR حريق OR مصرع OR إصابة OR القبض OR جريمة OR انقلاب")
+    )
+
+    // تصنيفات الأخبار: آخر الأخبار + سياسة وفن ورياضة... لكل قسم أخبار
+    private fun makeCats(allUrls: List<String>, gls: List<String>, fbName: String?): List<NewsSource> {
+        val out = ArrayList<NewsSource>()
+        out.add(NewsSource("آخر الأخبار", allUrls, if (fbName != null) listOf(gn(fbName, "SA", "7d")) else emptyList(), false))
+        for (d in CAT_DEFS) {
+            var main = ArrayList<String>()
+            var back = ArrayList<String>()
+            for (gl in gls) {
+                if (d.topic != null) main.add(topicUrl(d.topic, gl))
+                back.add(gn(d.q, gl, "7d"))
+            }
+            if (main.isEmpty()) {
+                main = back
+                back = ArrayList()
+            }
+            if (fbName != null) back.add(gn(fbName + " (" + d.q + ")", "SA", "7d"))
+            out.add(NewsSource(d.name, main, back, false))
+        }
+        return out
     }
+
+    // كلمة البحث لكل دولة (للأخبار المحلية)
+    private val COUNTRY_Q: Map<String, String> = mapOf(
+        "EG" to "مصر",
+        "SA" to "السعودية",
+        "AE" to "الإمارات",
+        "DZ" to "الجزائر",
+        "MA" to "المغرب",
+        "TN" to "تونس",
+        "LY" to "ليبيا",
+        "JO" to "الأردن",
+        "LB" to "لبنان",
+        "SY" to "سوريا",
+        "IQ" to "العراق",
+        "KW" to "الكويت",
+        "QA" to "قطر",
+        "BH" to "البحرين",
+        "OM" to "سلطنة عمان",
+        "YE" to "اليمن",
+        "PS" to "فلسطين",
+        "SD" to "السودان",
+        "MR" to "موريتانيا"
+    )
 
     // جرائد كل دولة (الاسم، الموقع)
     private val COUNTRY_PAPERS: Map<String, List<Pair<String, String>>> = mapOf(
@@ -70,29 +124,59 @@ object NewsSources {
         "MR" to listOf(Pair("الأخبار", "alakhbar.info"), Pair("صحراء ميديا", "saharamedias.net"))
     )
 
-    fun localPapers(cc: String): NewsGroup {
+    // كل الأقسام التسعة لدولة معينة
+    fun buildSections(cc: String): List<NewsSec> {
         val name = NewsData.NAMES[cc] ?: ""
+        val q = COUNTRY_Q[cc] ?: name
+        val localAll = listOf("https://news.google.com/rss?hl=ar&gl=" + cc + "&ceid=" + cc + ":ar", gn(q, cc, "7d"))
+        val arabAll = listOf(
+            "https://feeds.bbci.co.uk/arabic/rss.xml",
+            "https://www.skynewsarabia.com/web/rss",
+            "https://www.alarabiya.net/feed/rss2/ar.xml",
+            "https://aawsat.com/feed",
+            gn("أخبار الوطن العربي", "SA", "7d")
+        )
+        val worldAll = listOf(
+            topicUrl("WORLD", "US"),
+            "https://rss.dw.com/xml/rss-ar-all",
+            "https://www.france24.com/ar/rss"
+        )
+        return listOf(
+            NewsSec("أخبار محلية (" + name + ")", "news", makeCats(localAll, listOf(cc), q)),
+            NewsSec("أخبار عربية", "news", makeCats(arabAll, listOf("SA", "AE"), null)),
+            NewsSec("أخبار دولية", "news", makeCats(worldAll, listOf("US"), null)),
+            NewsSec("الصحف المحلية (" + name + ")", "papers", localPapers(cc)),
+            NewsSec("الصحف العربية", "papers", arabPapers()),
+            NewsSec("الصحف العالمية", "papers", worldPapers()),
+            NewsSec("المقالات المحلية (" + name + ")", "articles", localArticles(cc)),
+            NewsSec("المقالات العربية", "articles", arabArticles()),
+            NewsSec("المقالات العالمية", "articles", worldArticles())
+        )
+    }
+
+    private fun localPapers(cc: String): List<NewsSource> {
         val loc = Loc("ar", cc, "ar")
         val list = ArrayList<NewsSource>()
         for (p in COUNTRY_PAPERS[cc] ?: emptyList()) list.add(src(p.first, null, p.second, "", loc, false, "7d"))
-        return group("الصحف المحلية (" + name + ")", list)
+        return list
     }
 
-    fun localArticles(cc: String): NewsGroup {
+    private fun localArticles(cc: String): List<NewsSource> {
         val name = NewsData.NAMES[cc] ?: ""
+        val q = COUNTRY_Q[cc] ?: name
         val loc = Loc("ar", cc, "ar")
         val list = ArrayList<NewsSource>()
-        list.add(NewsSource("آخر المقالات", listOf(gn("مقالات رأي " + name, cc, "30d"), gn("مقال رأي " + name, cc, "30d")), emptyList(), false))
+        list.add(NewsSource("آخر المقالات", listOf(gn("مقالات رأي " + q, cc, "30d"), gn("مقال رأي " + q, cc, "30d")), emptyList(), false))
         var k = 0
         for (p in COUNTRY_PAPERS[cc] ?: emptyList()) {
             k++
             if (k > 7) break
             list.add(src(p.first + " - مقالات", null, p.second, "مقال رأي", loc, false, "30d"))
         }
-        return group("المقالات المحلية (" + name + ")", list)
+        return list
     }
 
-    fun arabPapers(): NewsGroup {
+    private fun arabPapers(): List<NewsSource> {
         val l = listOf(
             src("الجزيرة نت", listOf("https://www.aljazeera.net/aljazeerarss/a7c186be-1baa-4bd4-9d80-a84db769f779/73d0e1b4-532f-45ef-b135-bfdff8b8cab9"), "aljazeera.net", "", AR_SA, false, "7d"),
             src("بي بي سي عربي", listOf("https://feeds.bbci.co.uk/arabic/rss.xml"), "bbc.com/arabic", "", AR_SA, false, "7d"),
@@ -111,10 +195,10 @@ object NewsSources {
             src("الشروق الجزائرية", listOf("https://www.echoroukonline.com/feed"), "echoroukonline.com", "", AR_SA, false, "7d"),
             src("هسبريس المغربية", listOf("https://www.hespress.com/feed"), "hespress.com", "", AR_SA, false, "7d")
         )
-        return group("الصحف العربية", l)
+        return l
     }
 
-    fun worldPapers(): NewsGroup {
+    private fun worldPapers(): List<NewsSource> {
         val l = listOf(
             src("BBC News", listOf("https://feeds.bbci.co.uk/news/world/rss.xml"), "bbc.com", "", EN_GB, true, "7d"),
             src("The Guardian", listOf("https://www.theguardian.com/world/rss"), "theguardian.com", "", EN_GB, true, "7d"),
@@ -132,10 +216,10 @@ object NewsSources {
             src("El País (إسبانية)", null, "elpais.com", "", ES, true, "7d"),
             src("Der Spiegel (ألمانية)", listOf("https://www.spiegel.de/schlagzeilen/index.rss"), "spiegel.de", "", DE, true, "7d")
         )
-        return group("الصحف العالمية", l)
+        return l
     }
 
-    fun arabArticles(): NewsGroup {
+    private fun arabArticles(): List<NewsSource> {
         val l = listOf(
             NewsSource("آخر المقالات العربية", listOf(gn("مقالات رأي عربية", "SA", "30d"), gn("مقال رأي الوطن العربي", "SA", "30d")), emptyList(), false),
             NewsSource(
@@ -161,10 +245,10 @@ object NewsSources {
             src("المجلة - آراء", null, "majalla.com", "رأي OR مقال", AR_SA, false, "30d"),
             src("Arab News - Opinion (إنجليزي)", null, "arabnews.com", "opinion", EN_US, true, "30d")
         )
-        return group("المقالات العربية", l)
+        return l
     }
 
-    fun worldArticles(): NewsGroup {
+    private fun worldArticles(): List<NewsSource> {
         val l = listOf(
             src("The Guardian - Opinion", listOf("https://www.theguardian.com/commentisfree/rss"), "theguardian.com", "opinion", EN_GB, true, "30d"),
             src("New York Times - Opinion", listOf("https://rss.nytimes.com/services/xml/rss/nyt/Opinion.xml"), "nytimes.com", "opinion", EN_US, true, "30d"),
@@ -178,6 +262,6 @@ object NewsSources {
             src("El País - Opinión (إسبانية)", null, "elpais.com", "opinión", ES, true, "30d"),
             src("Der Spiegel - Meinung (ألمانية)", listOf("https://www.spiegel.de/meinung/index.rss"), "spiegel.de", "Meinung", DE, true, "30d")
         )
-        return group("المقالات العالمية", l)
+        return l
     }
 }

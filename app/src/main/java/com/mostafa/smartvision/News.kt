@@ -6,27 +6,26 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.telephony.TelephonyManager
-import android.widget.TextView
 import android.text.Html
 import android.util.Xml
+import android.widget.TextView
 import org.xmlpull.v1.XmlPullParser
 import java.io.StringReader
-import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
 
 // خبر واحد
-class NewsItem(val title: String, val source: String, val link: String, val date: Long, val summary: String) {
-    // نص الخبر الكامل بعد تحميله من موقع الجريدة (فاضي لحد ما يتحمل)
+class NewsItem(val title: String, val source: String, val link: String, val date: Long, var summary: String) {
+    // نص الخبر الأصلي (بلغة الجريدة) بعد تحميله، ثم النص النهائي للقراءة (مترجم لو الخبر أجنبي)
+    var fullOrig: String = ""
     var full: String = ""
-    // للأخبار الأجنبية بعد ترجمتها للعربية: العنوان الأصلي
+    var tried: Boolean = false
+    // للأخبار الأجنبية بعد ترجمة عنوانها للعربية
     var foreign: Boolean = false
     var origTitle: String = ""
+    var sumTr: Boolean = false
 }
-
-// قسم أخبار. kind: 0 = آخر أخبار الدولة، 1 = قسم جاهز من جوجل نيوز، 2 = بحث، 3 = أخبار عربية، 4 = أخبار عالمية
-class NewsSection(val name: String, val kind: Int, val topic: String, val query: String)
 
 class NewsResult(val items: List<NewsItem>, val error: String?)
 
@@ -39,71 +38,9 @@ object NewsData {
         "YE" to "اليمن", "PS" to "فلسطين", "SD" to "السودان", "MR" to "موريتانيا"
     )
 
-    val LOCAL = listOf(
-        NewsSection("آخر الأخبار", 0, "", ""),
-        NewsSection("سياسة", 1, "NATION", "سياسة OR الحكومة OR الرئيس OR البرلمان OR وزير OR مجلس"),
-        NewsSection("فن", 1, "ENTERTAINMENT", "فنان OR فنانة OR مسلسل OR فيلم OR حفل OR مهرجان OR سينما OR ممثل OR مطرب"),
-        NewsSection("رياضة", 1, "SPORTS", "كرة القدم OR الدوري OR مباراة OR المنتخب OR لاعب OR كأس"),
-        NewsSection("اقتصاد", 1, "BUSINESS", "اقتصاد OR البورصة OR الدولار OR الأسعار OR الاستثمار OR البنك"),
-        NewsSection("تقنية", 1, "TECHNOLOGY", "تكنولوجيا OR تقنية OR هاتف OR الذكاء الاصطناعي OR تطبيق"),
-        NewsSection("صحة", 1, "HEALTH", "صحة OR مرض OR علاج OR مستشفى OR وزارة الصحة OR دواء"),
-        NewsSection("حوادث", 2, "", "حادث OR حريق OR مصرع OR إصابة OR القبض OR جريمة OR انقلاب")
-    )
-    val OTHER = listOf(
-        NewsSection("أخبار عربية", 3, "", ""),
-        NewsSection("أخبار عالمية", 4, "", "")
-    )
-
-    private const val MAX_ITEMS = 40
     private const val MAX_AGE_MS = 30L * 24L * 3600L * 1000L
 
-    private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
-
-    private fun gnSearch(q: String, gl: String, w: String): String {
-        return "https://news.google.com/rss/search?q=" + enc(q + " when:" + w) + "&hl=ar&gl=" + gl + "&ceid=" + gl + ":ar"
-    }
-
-    private fun gnTopic(topic: String, gl: String): String {
-        return "https://news.google.com/rss/headlines/section/topic/" + topic + "?hl=ar&gl=" + gl + "&ceid=" + gl + ":ar"
-    }
-
-    // الروابط الأساسية، وروابط احتياطية تُجرَّب لو الأساسية ما رجّعتش أخبارًا
-    fun urlsFor(sec: NewsSection, cc: String): Pair<List<String>, List<String>> {
-        val name = NAMES[cc] ?: "مصر"
-        return when (sec.kind) {
-            0 -> Pair(
-                listOf("https://news.google.com/rss?hl=ar&gl=" + cc + "&ceid=" + cc + ":ar"),
-                listOf(gnSearch(name, "SA", "7d"))
-            )
-            1 -> Pair(
-                listOf(gnTopic(sec.topic, cc)),
-                listOf(gnSearch(sec.query, cc, "7d"), gnSearch(name + " (" + sec.query + ")", "SA", "7d"))
-            )
-            2 -> Pair(
-                listOf(gnSearch(sec.query, cc, "7d")),
-                listOf(gnSearch(name + " (" + sec.query + ")", "SA", "7d"))
-            )
-            3 -> Pair(
-                listOf(
-                    "https://feeds.bbci.co.uk/arabic/rss.xml",
-                    "https://www.skynewsarabia.com/web/rss",
-                    "https://www.alarabiya.net/feed/rss2/ar.xml",
-                    "https://aawsat.com/feed"
-                ),
-                listOf(gnTopic("WORLD", "SA"))
-            )
-            else -> Pair(
-                listOf(
-                    gnTopic("WORLD", "US"),
-                    "https://rss.dw.com/xml/rss-ar-all",
-                    "https://www.france24.com/ar/rss"
-                ),
-                listOf(gnSearch("أخبار العالم", "SA", "3d"))
-            )
-        }
-    }
-
-    // ---------- الدولة ----------
+    // ---------- الإعدادات ----------
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("news", Context.MODE_PRIVATE)
 
     fun isAuto(ctx: Context): Boolean {
@@ -117,6 +54,13 @@ object NewsData {
 
     fun setManual(ctx: Context, cc: String) {
         prefs(ctx).edit().putString("country", cc).apply()
+    }
+
+    // ترجمة المصادر الأجنبية للعربية: شغالة افتراضيًا
+    fun translateOn(ctx: Context): Boolean = prefs(ctx).getBoolean("translate", true)
+
+    fun setTranslate(ctx: Context, on: Boolean) {
+        prefs(ctx).edit().putBoolean("translate", on).apply()
     }
 
     // دولة الجهاز: من الشبكة أو الشريحة، ثم لغة/منطقة الجهاز
@@ -143,14 +87,9 @@ object NewsData {
     }
 
     // ---------- التحميل ----------
-    fun load(sec: NewsSection, cc: String, ownerTag: String, cancel: () -> Boolean): NewsResult {
-        val urls = urlsFor(sec, cc)
-        return loadUrls(urls.first, urls.second, ownerTag, cancel)
-    }
-
-    fun loadUrls(primary: List<String>, fallback: List<String>, ownerTag: String, cancel: () -> Boolean): NewsResult {
-        var items = fetchAll(primary, ownerTag)
-        if (items.isEmpty() && !cancel() && fallback.isNotEmpty()) items = fetchAll(fallback, ownerTag)
+    fun loadUrls(primary: List<String>, fallback: List<String>, limit: Int, ownerTag: String, cancel: () -> Boolean): NewsResult {
+        var items = fetchAll(primary, ownerTag, limit)
+        if (items.isEmpty() && !cancel() && fallback.isNotEmpty()) items = fetchAll(fallback, ownerTag, limit)
         if (cancel()) return NewsResult(emptyList(), "تم الإيقاف")
         if (items.isEmpty()) {
             val msg = if (!Net.isOnline()) "مفيش اتصال بالإنترنت" else "ما لقيتش أخبارًا في القسم ده دلوقتي. جرّب تحديثًا بعد شوية"
@@ -160,7 +99,7 @@ object NewsData {
     }
 
     // يجلب عدة خلاصات في نفس الوقت، ثم يدمجها ويرتبها من الأحدث
-    private fun fetchAll(urls: List<String>, ownerTag: String): List<NewsItem> {
+    private fun fetchAll(urls: List<String>, ownerTag: String, limit: Int): List<NewsItem> {
         val lists = arrayOfNulls<List<NewsItem>>(urls.size)
         val threads = ArrayList<Thread>()
         for (i in urls.indices) {
@@ -184,7 +123,7 @@ object NewsData {
             }
         }
         merged.sortByDescending { it.date }
-        return if (merged.size > MAX_ITEMS) ArrayList(merged.subList(0, MAX_ITEMS)) else merged
+        return if (merged.size > limit) ArrayList(merged.subList(0, limit)) else merged
     }
 
     private fun fetchOne(url: String): List<NewsItem> {
@@ -311,25 +250,40 @@ object NewsData {
     }
 }
 
+// تخزين مؤقت للعناوين: لو فتحت نفس التصنيف تاني خلال 10 دقايق بيفتح فورًا (زر "تحديث" بيجيب الجديد)
+private class NewsCacheEntry(val t: Long, val items: List<NewsItem>)
+private val NEWS_CACHE = HashMap<String, NewsCacheEntry>()
+
 class NewsActivity : Activity() {
     // علامة هذه الشاشة: إلغاء طلباتها لا يقطع طلبات شاشة أخرى
     private val ownerTag = "news" + System.identityHashCode(this)
     private var token = 0
-    private var screen = 0 // 0 الأقسام، 1 العناوين، 2 تفاصيل الخبر
+    // 0 الرئيسية، 1 التصنيفات، 2 العناوين، 3 تفاصيل الخبر، 4 الإعدادات، 5 المساعدة
+    private var screen = 0
     private var cc = "EG"
-    private var sec: NewsSection = NewsData.LOCAL[0]
+    private var secs: List<NewsSec> = emptyList()
+    private var si = 0
+    private var ci = 0
     private var items: List<NewsItem> = emptyList()
     private var idx = 0
     private var status: TextView? = null
-    private var src: NewsSource? = null
-    private var group: NewsGroup? = null
+    private val rates = floatArrayOf(0.7f, 0.85f, 1.0f, 1.15f, 1.3f, 1.5f, 1.7f, 2.0f, 2.5f)
+    private val rateNames = listOf(
+        "بطيء جدًا (0.7)", "بطيء (0.85)", "عادي (1.0)", "أسرع شوية (1.15)", "أسرع (1.3)",
+        "سريع (1.5)", "سريع جدًا (1.7)", "سريع قوي (2.0)", "أقصى سرعة (2.5)"
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
         Speaker.init(this)
+        applyCountry()
+        showMain()
+    }
+
+    private fun applyCountry() {
         cc = NewsData.activeCountry(this)
-        showSections()
+        secs = NewsSources.buildSections(cc)
     }
 
     private fun cancelWork() {
@@ -339,169 +293,152 @@ class NewsActivity : Activity() {
 
     private fun countryName(): String = NewsData.NAMES[cc] ?: ""
 
-    // ---------- شاشة الأقسام ----------
-    private fun showSections() {
+    // ---------- الشاشة الرئيسية: الأقسام التسعة ----------
+    private fun showMain() {
         screen = 0
-        src = null
-        group = null
         cancelWork()
         Speaker.stop()
         val p = Page(this, "قارئ الأخبار")
-        val how = if (NewsData.isAuto(this)) " (تلقائي حسب الهاتف)" else " (من اختيارك)"
-        p.label("الدولة الحالية: " + countryName() + how)
-        p.button("تغيير الدولة") { chooseCountry() }
-        p.section("أخبار " + countryName())
-        for (s in NewsData.LOCAL) {
-            p.button(s.name) { openSection(s) }
+        for (i in secs.indices) {
+            p.button(secs[i].name) { openSection(i) }
         }
-        p.section("أخبار عربية وعالمية")
-        for (s in NewsData.OTHER) {
-            p.button(s.name) { openSection(s) }
-        }
-        p.section("الصحف")
-        p.button("الصحف المحلية (" + countryName() + ")") { openGroup(NewsSources.localPapers(cc)) }
-        p.button("الصحف العربية") { openGroup(NewsSources.arabPapers()) }
-        p.button("الصحف العالمية") { openGroup(NewsSources.worldPapers()) }
-        p.section("المقالات")
-        p.button("المقالات المحلية (" + countryName() + ")") { openGroup(NewsSources.localArticles(cc)) }
-        p.button("المقالات العربية") { openGroup(NewsSources.arabArticles()) }
-        p.button("المقالات العالمية") { openGroup(NewsSources.worldArticles()) }
+        p.button("الإعدادات") { showSettings() }
+        p.button("مساعدة: شرح قارئ الأخبار") { showHelp() }
         p.bottomButton("رجوع للقائمة الرئيسية") { finish() }
     }
 
-    // ---------- قائمة مصادر (صحف أو مقالات) ----------
-    private fun openGroup(g: NewsGroup) {
-        group = g
-        showGroup()
-    }
-
-    private fun showGroup() {
-        val g = group ?: return
-        screen = 3
-        src = null
-        cancelWork()
-        Speaker.stop()
-        val p = Page(this, g.title)
-        if (g.hasForeign) p.label("بعض المصادر بلغات أجنبية، وبتترجم للعربية تلقائيًا (الترجمة آلية وقد تكون غير دقيقة)")
-        for (s in g.sources) {
-            p.button(s.name) { openSource(s) }
-        }
-        p.bottomButton("رجوع للأقسام") { showSections() }
-    }
-
-    private fun openSource(s: NewsSource) {
-        src = s
-        loadSection()
-    }
-
-    private fun backFromList() {
-        if (group != null) showGroup() else showSections()
-    }
-
-    private fun chooseCountry() {
-        val labels = ArrayList<String>()
-        labels.add("تلقائي (حسب الهاتف)")
-        for (c in NewsData.ORDER) labels.add(NewsData.NAMES[c] ?: c)
-        Ui.choose(this, "اختيار الدولة", labels) { i ->
-            if (i == 0) NewsData.setAuto(this) else NewsData.setManual(this, NewsData.ORDER[i - 1])
-            cc = NewsData.activeCountry(this)
-            showSections()
-        }
-    }
-
-    // ---------- شاشة العناوين ----------
-    private fun openSection(s: NewsSection) {
-        sec = s
-        src = null
-        loadSection()
-    }
-
-    private fun sectionTitle(): String {
-        val s = src
-        if (s != null) return s.name
-        return if (sec.kind <= 2) sec.name + " - " + countryName() else sec.name
-    }
-
-    private fun loadSection() {
+    // ---------- داخل القسم: التصنيفات أو المصادر ----------
+    private fun openSection(i: Int) {
+        si = i
         screen = 1
         cancelWork()
         Speaker.stop()
+        val sec = secs[i]
+        val p = Page(this, sec.name)
+        var hasForeign = false
+        for (c in sec.cats) if (c.foreign) hasForeign = true
+        if (hasForeign && NewsData.translateOn(this)) {
+            p.label("بعض المصادر بلغات أجنبية، وبتترجم للعربية تلقائيًا (الترجمة آلية وقد تكون غير دقيقة)")
+        }
+        for (k in sec.cats.indices) {
+            p.button(sec.cats[k].name) { openHeadlines(k, false) }
+        }
+        p.bottomButton("رجوع للأقسام") { showMain() }
+    }
+
+    // ---------- العناوين ----------
+    private fun openHeadlines(k: Int, force: Boolean) {
+        ci = k
+        val sec = secs[si]
+        val cat = sec.cats[k]
+        val foreign = cat.foreign && NewsData.translateOn(this)
+        val key = cc + ":" + si + ":" + k + ":" + (if (foreign) "t" else "n")
+        val hit = NEWS_CACHE[key]
+        if (hit != null && !force && System.currentTimeMillis() - hit.t < 600000L) {
+            items = hit.items
+            showHeadlines()
+            return
+        }
+        screen = 2
+        cancelWork()
+        Speaker.stop()
         val my = token
-        val p = Page(this, sectionTitle())
-        val st = p.label("جاري تحميل الأخبار، انتظر قليلًا")
+        val p = Page(this, sec.name + " - " + cat.name)
+        val st = p.label("جاري تحميل " + cat.name + "، انتظر قليلًا")
         Ui.live(st)
-        p.bottomButton(if (group != null) "رجوع للمصادر" else "رجوع للأقسام") { backFromList() }
-        val source = src
+        p.bottomButton("رجوع") { openSection(si) }
+        val limit = if (foreign) 12 else if (sec.kind == "news") 15 else 20
         Http.thread(ownerTag) {
-            val res = if (source != null) {
-                NewsData.loadUrls(source.urls, source.fallback, ownerTag) { my != token }
-            } else {
-                NewsData.load(sec, cc, ownerTag) { my != token }
-            }
+            val res = NewsData.loadUrls(cat.urls, cat.fallback, limit, ownerTag) { my != token }
             var list = res.items
-            if (source != null && source.foreign && list.isNotEmpty() && my == token) {
+            if (foreign && list.isNotEmpty() && my == token) {
                 runOnUiThread { if (my == token) st.text = "جاري ترجمة العناوين للعربية، انتظر قليلًا" }
-                list = NewsTranslate.items(list) { my != token }
+                list = NewsTranslate.titles(list, ownerTag) { my != token }
             }
             runOnUiThread {
                 if (my == token) {
+                    if (list.isNotEmpty()) NEWS_CACHE[key] = NewsCacheEntry(System.currentTimeMillis(), list)
                     items = list
-                    showHeadlines(res.error)
+                    if (list.isEmpty()) showHeadlinesEmpty(res.error) else showHeadlines()
                 }
             }
         }
     }
 
-    private fun showHeadlines(err: String?) {
-        screen = 1
-        cancelWork()
-        val p = Page(this, sectionTitle())
-        if (items.isEmpty()) {
-            val st = p.label(err ?: "لا توجد أخبار دلوقتي")
-            Ui.live(st)
-            p.button("إعادة المحاولة") { loadSection() }
-        } else {
-            val st = p.label("تم تحميل " + items.size + " خبرًا")
-            Ui.live(st)
-            p.button("تحديث الأخبار") { loadSection() }
-            p.button("قراءة العناوين بصوت عالٍ / إيقاف") { toggleHeadlines() }
-            for (i in items.indices) {
-                val n = items[i]
-                val a = NewsData.ago(n.date)
-                val label = n.title + " — " + n.source + (if (a.isNotEmpty()) " — " + a else "")
-                p.button(label) { openItem(i) }
-            }
-        }
-        p.bottomButton(if (group != null) "رجوع للمصادر" else "رجوع للأقسام") { backFromList() }
-        p.root.announceForAccessibility(if (items.isEmpty()) (err ?: "لا توجد أخبار") else "تم تحميل " + items.size + " خبرًا")
+    private fun showHeadlinesEmpty(err: String?) {
+        screen = 2
+        val sec = secs[si]
+        val p = Page(this, sec.name + " - " + sec.cats[ci].name)
+        val st = p.label(err ?: "لا توجد أخبار دلوقتي")
+        Ui.live(st)
+        p.button("إعادة المحاولة") { openHeadlines(ci, true) }
+        p.bottomButton("رجوع") { openSection(si) }
+        p.root.announceForAccessibility(err ?: "لا توجد أخبار")
     }
 
-    private fun toggleHeadlines() {
-        if (Speaker.isSpeaking()) {
-            Speaker.stop()
-            return
+    private fun showHeadlines() {
+        screen = 2
+        cancelWork()
+        val sec = secs[si]
+        val cat = sec.cats[ci]
+        val p = Page(this, sec.name + " - " + cat.name)
+        val st = p.label("عدد الأخبار: " + items.size)
+        Ui.live(st)
+        p.button("قراءة أول 10 عناوين") { readHeadlines() }
+        p.button("إيقاف القراءة") { Speaker.stop() }
+        p.button("تحديث") { openHeadlines(ci, true) }
+        for (i in items.indices) {
+            val n = items[i]
+            val a = NewsData.ago(n.date)
+            val label = n.title + " — " + n.source + (if (a.isNotEmpty()) " — " + a else "")
+            p.button(label) { openItem(i) }
         }
+        p.bottomButton("رجوع") { openSection(si) }
+        p.root.announceForAccessibility("تم تحميل " + items.size + " خبرًا")
+        prefetch()
+    }
+
+    private fun readHeadlines() {
+        Speaker.stop()
         val sb = StringBuilder()
         val n = if (items.size < 10) items.size else 10
-        for (i in 0 until n) {
-            sb.append(i + 1).append(". ").append(items[i].title).append(".\n")
-        }
+        for (i in 0 until n) sb.append(items[i].title).append(".\n")
         Speaker.speak(sb.toString())
     }
 
-    // ---------- شاشة تفاصيل الخبر ----------
-    private fun readText(n: NewsItem): String {
-        val sb = StringBuilder()
-        sb.append(n.title).append(".\n")
-        if (n.summary.isNotEmpty()) sb.append(n.summary).append("\n")
-        if (n.source.isNotEmpty()) sb.append("المصدر: ").append(n.source).append(".")
-        return sb.toString()
+    // تحميل مسبق في الخلفية لنص أول 4 أخبار (وترجمة أول خبرين لو أجنبية)، فيفتحوا بسرعة
+    private fun prefetch() {
+        val list = items
+        val my = token
+        Http.thread(ownerTag) {
+            var k = 0
+            while (k < list.size && k < 4) {
+                if (my != token) return@thread
+                val n = list[k]
+                if (n.full.isEmpty() && !n.tried) {
+                    n.tried = true
+                    val b = NewsArticle.load(n, ownerTag) { my != token }
+                    val t = b.text
+                    if (t != null && my == token) {
+                        n.fullOrig = t
+                        if (!n.foreign) {
+                            n.full = t
+                        } else if (k < 2) {
+                            val tr = NewsTranslate.long(t, ownerTag) { my != token }
+                            if (tr != null && my == token) n.full = tr
+                        }
+                    }
+                }
+                k++
+            }
+        }
     }
 
+    // ---------- تفاصيل الخبر ----------
     private fun openItem(i: Int, auto: Boolean = true) {
         if (i < 0 || i >= items.size) return
         idx = i
-        screen = 2
+        screen = 3
         cancelWork()
         Speaker.stop()
         val n = items[i]
@@ -510,14 +447,18 @@ class NewsActivity : Activity() {
         val a = NewsData.ago(n.date)
         p.label(n.source + (if (a.isNotEmpty()) " — " + a else ""))
         if (n.foreign && n.origTitle.isNotEmpty()) p.label("العنوان الأصلي: " + n.origTitle)
-        if (n.summary.isNotEmpty()) p.text(n.summary, 18f)
+        if (n.summary.isNotEmpty() && (!n.foreign || n.sumTr)) p.text(n.summary, 18f)
         val st = p.label("")
         Ui.live(st)
         status = st
-        p.button("قراءة الخبر بصوت عالٍ / إيقاف") {
-            if (Speaker.isSpeaking()) Speaker.stop() else Speaker.speak(readText(n))
+        p.button("قراءة الخبر") { readNews(n, i) }
+        p.button("قراءة العنوان فقط") {
+            Speaker.stop()
+            Speaker.speak(n.title)
         }
-        p.button(if (n.full.isEmpty()) "تحميل وقراءة نص الخبر كاملًا" else "قراءة نص الخبر كاملًا / إيقاف") { readFull(n, i) }
+        p.button("إيقاف القراءة") { Speaker.stop() }
+        p.button("زيادة سرعة القراءة") { adjustRate(1) }
+        p.button("تقليل سرعة القراءة") { adjustRate(-1) }
         if (i < items.size - 1) p.button("الخبر التالي") { openItem(i + 1) }
         if (i > 0) p.button("الخبر السابق") { openItem(i - 1) }
         p.button("فتح الخبر في المتصفح") { openLink(n.link) }
@@ -529,28 +470,47 @@ class NewsActivity : Activity() {
         }
         p.bottomButton("رجوع للعناوين") {
             Speaker.stop()
-            showHeadlines(null)
+            showHeadlines()
         }
-        if (auto && Store.autoSpeak()) Speaker.speak(readText(n))
+        if (auto && Store.autoSpeak()) readNews(n, i)
     }
 
-    // يقرأ نص الخبر كاملًا: لو متحمل نبدأ القراءة، وإلا نحمّله أولًا
-    private fun readFull(n: NewsItem, i: Int) {
+    // يقرأ العنوان ونص الخبر: لو متحمل يقرا فورًا، وإلا يحمّله (ويترجمه لو أجنبي) الأول
+    private fun readNews(n: NewsItem, i: Int) {
         if (n.full.isNotEmpty()) {
-            if (Speaker.isSpeaking()) Speaker.stop() else Speaker.speak(n.title + ".\n" + n.full)
+            Speaker.stop()
+            Speaker.speak(n.title + ".\n" + n.full)
             return
         }
         Speaker.stop()
         Http.cancelOwner(ownerTag)
         token++
         val my = token
-        status?.text = "جاري تحميل نص الخبر كاملًا، انتظر قليلًا"
+        status?.text = "جاري تحميل الخبر، انتظر قليلًا"
         Http.thread(ownerTag) {
-            val b = NewsArticle.load(n, ownerTag) { my != token }
-            var body = b.text
-            if (body != null && n.foreign && my == token) {
-                runOnUiThread { if (my == token) status?.text = "جاري ترجمة نص الخبر للعربية، انتظر قليلًا" }
-                body = NewsTranslate.long(body) { my != token } ?: body
+            var orig = n.fullOrig
+            var reason = ""
+            if (orig.isEmpty()) {
+                val b = NewsArticle.load(n, ownerTag) { my != token }
+                val t = b.text
+                if (t != null) orig = t else reason = b.reason
+            }
+            var body: String? = null
+            if (orig.isNotEmpty()) {
+                n.fullOrig = orig
+                if (n.foreign) {
+                    runOnUiThread { if (my == token) status?.text = "جاري ترجمة نص الخبر للعربية، انتظر قليلًا" }
+                    body = NewsTranslate.long(orig, ownerTag) { my != token } ?: orig
+                } else {
+                    body = orig
+                }
+            }
+            // لو نص الخبر ما اتحملش: نقرأ الملخص (ونترجمه لو أجنبي)
+            var summary = n.summary
+            if (body == null && summary.isNotEmpty() && n.foreign && !n.sumTr && my == token) {
+                summary = NewsTranslate.many(listOf(summary), ownerTag) { my != token }[0]
+                n.summary = summary
+                n.sumTr = true
             }
             runOnUiThread {
                 if (my == token) {
@@ -560,11 +520,27 @@ class NewsActivity : Activity() {
                         openItem(i, false)
                         Speaker.speak(n.title + ".\n" + t)
                     } else {
-                        status?.text = b.reason
+                        status?.text = reason
+                        Speaker.speak(n.title + (if (summary.isNotEmpty()) ".\n" + summary else ""))
                     }
                 }
             }
         }
+    }
+
+    private fun adjustRate(d: Int) {
+        var best = 0
+        var bd = 99f
+        for (k in rates.indices) {
+            val diff = Math.abs(rates[k] - Store.rate())
+            if (diff < bd) {
+                bd = diff
+                best = k
+            }
+        }
+        val nk = if (best + d < 0) 0 else if (best + d >= rates.size) rates.size - 1 else best + d
+        Speaker.setRate(rates[nk])
+        Ui.toast(this, "سرعة القراءة: " + rateNames[nk] + ". بتتطبق من القراءة الجاية")
     }
 
     private fun openLink(url: String) {
@@ -575,18 +551,100 @@ class NewsActivity : Activity() {
         }
     }
 
-    // الرجوع يطلع مستوى واحد، ولا يخرج من القارئ كله إلا من شاشة الأقسام
+    // ---------- الإعدادات ----------
+    private fun showSettings() {
+        screen = 4
+        cancelWork()
+        Speaker.stop()
+        val p = Page(this, "إعدادات قارئ الأخبار")
+        val how = if (NewsData.isAuto(this)) "تلقائي (" + countryName() + ")" else countryName() + " (اخترتها بنفسك)"
+        p.button("الدولة للأخبار المحلية: " + how) { chooseCountry() }
+        p.button("ترجمة المصادر الأجنبية: " + (if (NewsData.translateOn(this)) "تشغيل" else "إيقاف")) {
+            NewsData.setTranslate(this, !NewsData.translateOn(this))
+            showSettings()
+        }
+        p.button("محرك الصوت") { chooseEngine() }
+        var rn = rateNames[2]
+        for (k in rates.indices) if (rates[k] == Store.rate()) rn = rateNames[k]
+        p.button("سرعة القراءة: " + rn) { chooseRate() }
+        p.button("اختبار الصوت") {
+            Speaker.stop()
+            Speaker.speak("هذا اختبار لقراءة الأخبار بالصوت والسرعة المختارين")
+        }
+        p.button("عرض آخر خطأ في تحميل الخبر") {
+            val e = NewsArticle.lastError
+            Ui.message(this, "آخر خطأ في تحميل الخبر", if (e.isEmpty()) "مفيش أخطاء" else e)
+        }
+        p.button("مساعدة: شرح قارئ الأخبار") { showHelp() }
+        p.bottomButton("رجوع") { showMain() }
+    }
+
+    private fun chooseCountry() {
+        val labels = ArrayList<String>()
+        labels.add("تلقائي (حسب الهاتف)")
+        for (c in NewsData.ORDER) labels.add(NewsData.NAMES[c] ?: c)
+        Ui.choose(this, "اختيار الدولة", labels) { i ->
+            if (i == 0) NewsData.setAuto(this) else NewsData.setManual(this, NewsData.ORDER[i - 1])
+            applyCountry()
+            showSettings()
+        }
+    }
+
+    private fun chooseEngine() {
+        val engines = Speaker.engines()
+        val labels = ArrayList<String>()
+        labels.add("محرك النظام الافتراضي")
+        for (e in engines) labels.add(e.label.toString())
+        Ui.choose(this, "اختيار محرك الصوت", labels) { i ->
+            if (i == 0) {
+                Speaker.setEngine("")
+                Ui.toast(this, "تم اختيار المحرك الافتراضي")
+            } else {
+                Speaker.setEngine(engines[i - 1].name)
+                Ui.toast(this, "تم اختيار " + engines[i - 1].label.toString())
+            }
+        }
+    }
+
+    private fun chooseRate() {
+        Ui.choose(this, "سرعة القراءة", rateNames) { i ->
+            Speaker.setRate(rates[i])
+            showSettings()
+            Speaker.speak("هذه تجربة للسرعة الجديدة")
+        }
+    }
+
+    // ---------- المساعدة ----------
+    private fun showHelp() {
+        screen = 5
+        cancelWork()
+        Speaker.stop()
+        val p = Page(this, "شرح قارئ الأخبار")
+        p.text("قارئ الأخبار بيجيب لك آخر الأخبار والصحف والمقالات من الإنترنت ويقراها لك بصوت محرك النطق اللي على تليفونك. مفيش مفاتيح مطلوبة.", 18f)
+        p.section("الأقسام في الشاشة الرئيسية")
+        p.text("أخبار محلية: أخبار دولتك. التطبيق بيتعرف على دولتك تلقائيًا من شبكة الهاتف أو الشريحة أو لغة الجهاز، وتقدر تختار دولة تانية من الإعدادات.", 18f)
+        p.text("أخبار عربية، وأخبار دولية، والصحف المحلية والعربية والعالمية، والمقالات المحلية والعربية والعالمية.", 18f)
+        p.text("المصادر الأجنبية بتتترجم للعربية تلقائيًا، وتقدر توقف الترجمة من الإعدادات.", 18f)
+        p.section("جوه كل قسم")
+        p.text("اختار التصنيف أو الجريدة. وبعدها: قراءة أول 10 عناوين، وإيقاف القراءة، وتحديث (العناوين بتتخزن 10 دقايق عشان تفتح بسرعة). دوس على أي عنوان عشان تفتح تفاصيل الخبر.", 18f)
+        p.section("شاشة تفاصيل الخبر")
+        p.text("قراءة الخبر: بتقرا العنوان ونص الخبر (بيتحمل ويتترجم لو لازم). قراءة العنوان فقط. إيقاف القراءة. زيادة وتقليل سرعة القراءة. الخبر التالي والسابق. فتح الخبر في المتصفح، ونسخ العنوان ومشاركته.", 18f)
+        p.section("ملاحظات")
+        p.text("بعض الجرايد بتمنع قراءة الخبر كامل، فبتتقرا العناوين والملخص بس. تقدر تشوف السبب من الإعدادات، زر عرض آخر خطأ في تحميل الخبر. لو مفيش صوت عربي، اختار محرك نطق فيه عربي من الإعدادات.", 18f)
+        p.bottomButton("رجوع") { showMain() }
+    }
+
+    // الرجوع يطلع مستوى واحد، ولا يخرج من القارئ كله إلا من الشاشة الرئيسية
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (screen == 2) {
-            Speaker.stop()
-            showHeadlines(null)
-        } else if (screen == 1) {
-            backFromList()
-        } else if (screen == 3) {
-            showSections()
-        } else {
-            super.onBackPressed()
+        when (screen) {
+            3 -> {
+                Speaker.stop()
+                showHeadlines()
+            }
+            2 -> openSection(si)
+            1, 4, 5 -> showMain()
+            else -> super.onBackPressed()
         }
     }
 
