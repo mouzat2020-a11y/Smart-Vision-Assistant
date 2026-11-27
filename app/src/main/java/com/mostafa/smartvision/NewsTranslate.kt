@@ -69,7 +69,18 @@ object NewsTranslate {
 
     // يترجم عناوين الأخبار الأجنبية ويرجّع أخبارًا جديدة بعناوين عربية (والعنوان الأصلي محفوظ)
     fun titles(items: List<NewsItem>, ownerTag: String, cancel: () -> Boolean): List<NewsItem> {
-        val tr = many(items.map { it.title }, ownerTag, cancel)
+        val titles = items.map { it.title.replace("\n", " ").trim() }
+        // الأسرع: كل العناوين في طلب واحد (كل عنوان في سطر)، ولو عدد الأسطر اختلف نرجع للترجمة المتوازية
+        var tr: List<String>? = null
+        val joined = titles.joinToString("\n")
+        if (joined.length <= 1700 && !cancel()) {
+            val r = gtx(joined)
+            if (r != null) {
+                val parts = r.split("\n").map { it.trim() }
+                if (parts.size == titles.size && parts.none { it.isEmpty() }) tr = parts
+            }
+        }
+        if (tr == null) tr = many(titles, ownerTag, cancel)
         val out = ArrayList<NewsItem>()
         for (i in items.indices) {
             val n = items[i]

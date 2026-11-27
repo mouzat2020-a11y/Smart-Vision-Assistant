@@ -864,6 +864,8 @@ object Http {
         val tag = owner.get() ?: ""
         val tg = tagGenOf(tag)
         var rec: Live? = null
+        // لو قرأنا الرد كاملًا نترك الاتصال مفتوحًا ليُعاد استخدامه في الطلب اللي بعده (أسرع، خصوصًا في الترجمة)
+        var reuse = false
         try {
             val c = URL(url).openConnection() as HttpURLConnection
             val r = Live(c, tag)
@@ -884,6 +886,7 @@ object Http {
                 if (raw == null) return HttpResult(-1, "حجم رد الخادم أكبر من الحد المسموح")
                 text = String(raw, Charsets.UTF_8)
             }
+            reuse = true
             return HttpResult(code, text)
         } catch (e: Exception) {
             if (isCancelled(gen, tag, tg)) return HttpResult(-2, "cancelled")
@@ -893,7 +896,9 @@ object Http {
             val r2 = rec
             if (r2 != null) {
                 synchronized(live) { live.remove(r2) }
-                try { r2.conn.disconnect() } catch (e: Exception) { }
+                if (!reuse) {
+                    try { r2.conn.disconnect() } catch (e: Exception) { }
+                }
             }
         }
     }

@@ -25,6 +25,8 @@ class NewsItem(val title: String, val source: String, val link: String, val date
     var foreign: Boolean = false
     var origTitle: String = ""
     var sumTr: Boolean = false
+    // لو التحميل شغال دلوقتي (تحميل مسبق مثلًا)، فبدل ما نكرر الطلب بنستناه
+    @Volatile var loading: Boolean = false
 }
 
 class NewsResult(val items: List<NewsItem>, val error: String?)
@@ -257,6 +259,10 @@ private val NEWS_CACHE = HashMap<String, NewsCacheEntry>()
 class NewsActivity : Activity() {
     // علامة هذه الشاشة: إلغاء طلباتها لا يقطع طلبات شاشة أخرى
     private val ownerTag = "news" + System.identityHashCode(this)
+    // التحميل المسبق له علامته الخاصة، فيكمل شغله حتى لو فتحت تفاصيل خبر
+    private val prefTag = ownerTag + "p"
+    private var prefGen = 0
+    private var prefList: List<NewsItem>? = null
     private var token = 0
     // 0 الرئيسية، 1 التصنيفات، 2 العناوين، 3 تفاصيل الخبر، 4 الإعدادات، 5 المساعدة
     private var screen = 0
@@ -291,11 +297,19 @@ class NewsActivity : Activity() {
         Http.cancelOwner(ownerTag)
     }
 
+    // يوقف التحميل المسبق (لما نسيب القايمة)
+    private fun stopPrefetch() {
+        prefGen++
+        prefList = null
+        Http.cancelOwner(prefTag)
+    }
+
     private fun countryName(): String = NewsData.NAMES[cc] ?: ""
 
     // ---------- الشاشة الرئيسية: الأقسام التسعة ----------
     private fun showMain() {
         screen = 0
+        stopPrefetch()
         cancelWork()
         Speaker.stop()
         val p = Page(this, "قارئ الأخبار")
@@ -311,6 +325,7 @@ class NewsActivity : Activity() {
     private fun openSection(i: Int) {
         si = i
         screen = 1
+        stopPrefetch()
         cancelWork()
         Speaker.stop()
         val sec = secs[i]
@@ -340,6 +355,7 @@ class NewsActivity : Activity() {
             return
         }
         screen = 2
+        stopPrefetch()
         cancelWork()
         Speaker.stop()
         val my = token
@@ -395,7 +411,7 @@ class NewsActivity : Activity() {
         }
         p.bottomButton("رجوع") { openSection(si) }
         p.root.announceForAccessibility("تم تحميل " + items.size + " خبرًا")
-        prefetch()
+        if (prefList !== items) prefetch()
     }
 
     private fun readHeadlines() {
@@ -406,27 +422,34 @@ class NewsActivity : Activity() {
         Speaker.speak(sb.toString())
     }
 
-    // تحميل مسبق في الخلفية لنص أول 4 أخبار (وترجمة أول خبرين لو أجنبية)، فيفتحوا بسرعة
+    // تحميل مسبق في الخلفية لنص أول 4 أخبار (وترجمة أول خبرين لو أجنبية)، فيفتحوا بسرعة.
+    // بيكمل شغله حتى لو فتحت تفاصيل خبر، ويقف بس لما تسيب القايمة
     private fun prefetch() {
         val list = items
-        val my = token
-        Http.thread(ownerTag) {
+        prefList = list
+        val myGen = prefGen
+        Http.thread(prefTag) {
             var k = 0
             while (k < list.size && k < 4) {
-                if (my != token) return@thread
+                if (myGen != prefGen) return@thread
                 val n = list[k]
-                if (n.full.isEmpty() && !n.tried) {
-                    n.tried = true
-                    val b = NewsArticle.load(n, ownerTag) { my != token }
-                    val t = b.text
-                    if (t != null && my == token) {
-                        n.fullOrig = t
-                        if (!n.foreign) {
-                            n.full = t
-                        } else if (k < 2) {
-                            val tr = NewsTranslate.long(t, ownerTag) { my != token }
-                            if (tr != null && my == token) n.full = tr
+                if (n.full.isEmpty() && !n.tried && !n.loading) {
+                    n.loading = true
+                    try {
+                        val b = NewsArticle.load(n, prefTag) { myGen != prefGen }
+                        val t = b.text
+                        if (t != null && myGen == prefGen) {
+                            n.fullOrig = t
+                            if (!n.foreign) {
+                                n.full = t
+                            } else if (k < 2) {
+                                val tr = NewsTranslate.long(t, prefTag) { myGen != prefGen }
+                                if (tr != null && myGen == prefGen) n.full = tr
+                            }
                         }
+                        if (t == null && myGen == prefGen) n.tried = true
+                    } finally {
+                        n.loading = false
                     }
                 }
                 k++
@@ -488,6 +511,25 @@ class NewsActivity : Activity() {
         val my = token
         status?.text = "جاري تحميل الخبر، انتظر قليلًا"
         Http.thread(ownerTag) {
+            // لو الخبر بيتحمل بالفعل في التحميل المسبق نستناه بدل ما نكرر الطلب
+            var waited = 0
+            while (n.loading && waited < 90000 && my == token) {
+                try { Thread.sleep(200) } catch (e: Exception) { }
+                waited += 200
+            }
+            if (my != token) return@thread
+            if (n.full.isNotEmpty()) {
+                val ready = n.full
+                runOnUiThread {
+                    if (my == token) {
+                        openItem(i, false)
+                        Speaker.speak(n.title + ".\n" + ready)
+                    }
+                }
+                return@thread
+            }
+            n.loading = true
+            try {
             var orig = n.fullOrig
             var reason = ""
             if (orig.isEmpty()) {
@@ -525,6 +567,9 @@ class NewsActivity : Activity() {
                     }
                 }
             }
+            } finally {
+                n.loading = false
+            }
         }
     }
 
@@ -554,6 +599,7 @@ class NewsActivity : Activity() {
     // ---------- الإعدادات ----------
     private fun showSettings() {
         screen = 4
+        stopPrefetch()
         cancelWork()
         Speaker.stop()
         val p = Page(this, "إعدادات قارئ الأخبار")
@@ -617,6 +663,7 @@ class NewsActivity : Activity() {
     // ---------- المساعدة ----------
     private fun showHelp() {
         screen = 5
+        stopPrefetch()
         cancelWork()
         Speaker.stop()
         val p = Page(this, "شرح قارئ الأخبار")
@@ -651,6 +698,7 @@ class NewsActivity : Activity() {
     override fun onDestroy() {
         token++
         Http.cancelOwner(ownerTag)
+        stopPrefetch()
         Speaker.stop()
         super.onDestroy()
     }

@@ -27,7 +27,7 @@ object NewsArticle {
         var lead = ""
         var jinaOnly = false
         if (url.contains("news.google.com")) {
-            val real = resolveGNews(url, cancel)
+            val real = resolveGNews(url, ownerTag, cancel)
             if (cancel()) return Body(null, "تم الإيقاف")
             if (real != null) url = real else jinaOnly = true
         }
@@ -195,7 +195,7 @@ object NewsArticle {
     }
 
     // ---------- فك روابط جوجل نيوز ----------
-    private fun resolveGNews(link: String, cancel: () -> Boolean): String? {
+    private fun resolveGNews(link: String, ownerTag: String, cancel: () -> Boolean): String? {
         val idm = Regex("/(?:articles|read)/([^/?#]+)").find(link) ?: return null
         val id = idm.groupValues[1]
         // الروابط القديمة فيها الرابط الحقيقي داخل الكود نفسه
@@ -207,7 +207,7 @@ object NewsArticle {
         } catch (e: Exception) { }
         for (attempt in 0..1) {
             if (cancel()) return null
-            val params = gnParams(id)
+            val params = gnParams(id, ownerTag)
             if (params != null) {
                 val u = gnBatch(id, params.first, params.second)
                 if (u != null) return u
@@ -223,19 +223,29 @@ object NewsArticle {
         return null
     }
 
-    private fun gnParams(id: String): Pair<String, String>? {
+    // الرابطين بيتجربوا في نفس الوقت، وأول واحد ينجح هو اللي بيتاخد
+    private fun gnParams(id: String, ownerTag: String): Pair<String, String>? {
         val urls = listOf(
             "https://news.google.com/articles/" + id + "?hl=ar&gl=EG&ceid=EG%3Aar",
             "https://news.google.com/rss/articles/" + id + "?hl=ar&gl=EG&ceid=EG:ar"
         )
-        for (u in urls) {
-            val r = Http.get(u, emptyMap(), 15000)
-            if (r.code == 200) {
-                val sg = Regex("data-n-a-sg=\"([^\"]+)\"").find(r.body)
-                val ts = Regex("data-n-a-ts=\"([^\"]+)\"").find(r.body)
-                if (sg != null && ts != null) return Pair(sg.groupValues[1], ts.groupValues[1])
-            }
+        val results = arrayOfNulls<Pair<String, String>>(urls.size)
+        val threads = ArrayList<Thread>()
+        for (i in urls.indices) {
+            val u = urls[i]
+            threads.add(Http.thread(ownerTag) {
+                val r = Http.get(u, emptyMap(), 15000)
+                if (r.code == 200) {
+                    val sg = Regex("data-n-a-sg=\"([^\"]+)\"").find(r.body)
+                    val ts = Regex("data-n-a-ts=\"([^\"]+)\"").find(r.body)
+                    if (sg != null && ts != null) results[i] = Pair(sg.groupValues[1], ts.groupValues[1])
+                }
+            })
         }
+        for (t in threads) {
+            try { t.join() } catch (e: Exception) { }
+        }
+        for (r in results) if (r != null) return r
         return null
     }
 
