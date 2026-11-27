@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.telephony.TelephonyManager
+import android.widget.TextView
 import android.text.Html
 import android.util.Xml
 import org.xmlpull.v1.XmlPullParser
@@ -16,7 +17,10 @@ import java.util.Locale
 import java.util.TimeZone
 
 // خبر واحد
-class NewsItem(val title: String, val source: String, val link: String, val date: Long, val summary: String)
+class NewsItem(val title: String, val source: String, val link: String, val date: Long, val summary: String) {
+    // نص الخبر الكامل بعد تحميله من موقع الجريدة (فاضي لحد ما يتحمل)
+    var full: String = ""
+}
 
 // قسم أخبار. kind: 0 = آخر أخبار الدولة، 1 = قسم جاهز من جوجل نيوز، 2 = بحث، 3 = أخبار عربية، 4 = أخبار عالمية
 class NewsSection(val name: String, val kind: Int, val topic: String, val query: String)
@@ -309,6 +313,7 @@ class NewsActivity : Activity() {
     private var sec: NewsSection = NewsData.LOCAL[0]
     private var items: List<NewsItem> = emptyList()
     private var idx = 0
+    private var status: TextView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -388,6 +393,7 @@ class NewsActivity : Activity() {
 
     private fun showHeadlines(err: String?) {
         screen = 1
+        cancelWork()
         val p = Page(this, sectionTitle())
         if (items.isEmpty()) {
             val st = p.label(err ?: "لا توجد أخبار دلوقتي")
@@ -431,10 +437,11 @@ class NewsActivity : Activity() {
         return sb.toString()
     }
 
-    private fun openItem(i: Int) {
+    private fun openItem(i: Int, auto: Boolean = true) {
         if (i < 0 || i >= items.size) return
         idx = i
         screen = 2
+        cancelWork()
         Speaker.stop()
         val n = items[i]
         val p = Page(this, "تفاصيل الخبر")
@@ -442,19 +449,55 @@ class NewsActivity : Activity() {
         val a = NewsData.ago(n.date)
         p.label(n.source + (if (a.isNotEmpty()) " — " + a else ""))
         if (n.summary.isNotEmpty()) p.text(n.summary, 18f)
+        val st = p.label("")
+        Ui.live(st)
+        status = st
         p.button("قراءة الخبر بصوت عالٍ / إيقاف") {
             if (Speaker.isSpeaking()) Speaker.stop() else Speaker.speak(readText(n))
         }
+        p.button(if (n.full.isEmpty()) "تحميل وقراءة نص الخبر كاملًا" else "قراءة نص الخبر كاملًا / إيقاف") { readFull(n, i) }
         if (i < items.size - 1) p.button("الخبر التالي") { openItem(i + 1) }
         if (i > 0) p.button("الخبر السابق") { openItem(i - 1) }
         p.button("فتح الخبر في المتصفح") { openLink(n.link) }
         p.button("نسخ العنوان") { Ui.copy(this, n.title) }
         p.button("مشاركة الخبر") { Ui.share(this, n.title + "\n" + n.link) }
+        if (n.full.isNotEmpty()) {
+            p.section("نص الخبر")
+            p.text(n.full, 18f)
+        }
         p.bottomButton("رجوع للعناوين") {
             Speaker.stop()
             showHeadlines(null)
         }
-        if (Store.autoSpeak()) Speaker.speak(readText(n))
+        if (auto && Store.autoSpeak()) Speaker.speak(readText(n))
+    }
+
+    // يقرأ نص الخبر كاملًا: لو متحمل نبدأ القراءة، وإلا نحمّله أولًا
+    private fun readFull(n: NewsItem, i: Int) {
+        if (n.full.isNotEmpty()) {
+            if (Speaker.isSpeaking()) Speaker.stop() else Speaker.speak(n.title + ".\n" + n.full)
+            return
+        }
+        Speaker.stop()
+        Http.cancelOwner(ownerTag)
+        token++
+        val my = token
+        status?.text = "جاري تحميل نص الخبر كاملًا، انتظر قليلًا"
+        Http.thread(ownerTag) {
+            val b = NewsArticle.load(n, ownerTag) { my != token }
+            runOnUiThread {
+                if (my == token) {
+                    val t = b.text
+                    if (t != null) {
+                        n.full = t
+                        openItem(i, false)
+                        Speaker.speak(n.title + ".\n" + t)
+                    } else {
+                        status?.text = b.reason
+                    }
+                }
+            }
+        }
     }
 
     private fun openLink(url: String) {
