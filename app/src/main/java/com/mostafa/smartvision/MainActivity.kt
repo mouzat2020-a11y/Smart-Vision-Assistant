@@ -84,7 +84,12 @@ class MainActivity : Activity() {
         showTab(0)
     }
 
+    private var curTab = -1
+
     private fun showTab(i: Int) {
+        // نغمة إخبارية لما ننتقل لتبويب الأخبار (مش كل مرة بنضغط عليه وإحنا فيه)
+        if (i == 3 && curTab != 3) NewsJingle.play()
+        curTab = i
         for (k in tabButtons.indices) {
             val sel = (k == i)
             tabButtons[k].isSelected = sel

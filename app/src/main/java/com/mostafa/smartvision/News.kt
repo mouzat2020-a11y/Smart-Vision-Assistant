@@ -27,9 +27,6 @@ class NewsItem(val title: String, val source: String, val link: String, val date
     var sumTr: Boolean = false
     // لو التحميل شغال دلوقتي (تحميل مسبق مثلًا)، فبدل ما نكرر الطلب بنستناه
     @Volatile var loading: Boolean = false
-    // تفاصيل وشرح بالذكاء الاصطناعي بعد طلبها
-    var aiDetails: String = ""
-    var aiExplain: String = ""
 }
 
 class NewsResult(val items: List<NewsItem>, val error: String?)
@@ -506,19 +503,9 @@ class NewsActivity : Activity() {
         p.button("تقليل سرعة القراءة") { adjustRate(-1) }
         if (i < items.size - 1) p.button("الخبر التالي") { openItem(i + 1) }
         if (i > 0) p.button("الخبر السابق") { openItem(i - 1) }
-        p.button("تفاصيل أكتر بالذكاء الاصطناعي") { askAi(n, i, 0) }
-        p.button("اشرح الخبر بالذكاء الاصطناعي (الخلفية والسبب)") { askAi(n, i, 1) }
         p.button("فتح الخبر في المتصفح") { openLink(n.link) }
         p.button("نسخ العنوان") { Ui.copy(this, n.title) }
         p.button("مشاركة الخبر") { Ui.share(this, n.title + "\n" + n.link) }
-        if (n.aiDetails.isNotEmpty()) {
-            p.section("تفاصيل بالذكاء الاصطناعي (ملخص من نتائج البحث، مش نص الجريدة)")
-            p.text(n.aiDetails, 18f)
-        }
-        if (n.aiExplain.isNotEmpty()) {
-            p.section("شرح الخبر بالذكاء الاصطناعي")
-            p.text(n.aiExplain, 18f)
-        }
         if (n.full.isNotEmpty()) {
             p.section("نص الخبر")
             p.text(n.full, 18f)
@@ -579,22 +566,9 @@ class NewsActivity : Activity() {
                     body = orig
                 }
             }
-            // لو نص الخبر ما اتحملش: نجرب تفاصيل الذكاء الاصطناعي (لو مفتاح Gemini موجود)
-            var aiText = ""
-            if (body == null && n.aiDetails.isEmpty() && Store.hasKey("gemini") && my == token) {
-                runOnUiThread { if (my == token) status?.text = "الجريدة ما سمحتش بقراءة الخبر، جاري طلب التفاصيل بالذكاء الاصطناعي" }
-                val r = NewsAi.ask(n.title, n.link, 0) { my != token }
-                val t = r.first
-                if (t != null) {
-                    n.aiDetails = t
-                    aiText = t
-                }
-            } else if (body == null && n.aiDetails.isNotEmpty()) {
-                aiText = n.aiDetails
-            }
-            // لو لسه فاضي: نقرأ الملخص (ونترجمه لو أجنبي)
+            // لو نص الخبر ما اتحملش: نقرأ الملخص (ونترجمه لو أجنبي)
             var summary = n.summary
-            if (body == null && aiText.isEmpty() && summary.isNotEmpty() && n.foreign && !n.sumTr && my == token) {
+            if (body == null && summary.isNotEmpty() && n.foreign && !n.sumTr && my == token) {
                 summary = NewsTranslate.many(listOf(summary), ownerTag) { my != token }[0]
                 n.summary = summary
                 n.sumTr = true
@@ -606,9 +580,6 @@ class NewsActivity : Activity() {
                         n.full = t
                         openItem(i, false)
                         Speaker.speak(n.title + ".\n" + t)
-                    } else if (aiText.isNotEmpty()) {
-                        openItem(i, false)
-                        Speaker.speak(n.title + ".\n" + aiText)
                     } else {
                         status?.text = reason
                         Speaker.speak(n.title + (if (summary.isNotEmpty()) ".\n" + summary else ""))
@@ -617,40 +588,6 @@ class NewsActivity : Activity() {
             }
             } finally {
                 n.loading = false
-            }
-        }
-    }
-
-    // تفاصيل أو شرح بالذكاء الاصطناعي (Gemini). mode: 0 تفاصيل، 1 شرح
-    private fun askAi(n: NewsItem, i: Int, mode: Int) {
-        if (!Store.hasKey("gemini")) {
-            Ui.toast(this, "الميزة دي محتاجة مفتاح Gemini، أضفه من إعدادات التطبيق")
-            return
-        }
-        val have = if (mode == 0) n.aiDetails else n.aiExplain
-        if (have.isNotEmpty()) {
-            Speaker.stop()
-            Speaker.speak(n.title + ".\n" + have)
-            return
-        }
-        Speaker.stop()
-        Http.cancelOwner(ownerTag)
-        token++
-        val my = token
-        status?.text = "جاري طلب " + (if (mode == 0) "التفاصيل" else "الشرح") + " من الذكاء الاصطناعي، انتظر قليلًا"
-        Http.thread(ownerTag) {
-            val r = NewsAi.ask(n.title, n.link, mode) { my != token }
-            runOnUiThread {
-                if (my == token) {
-                    val t = r.first
-                    if (t != null) {
-                        if (mode == 0) n.aiDetails = t else n.aiExplain = t
-                        openItem(i, false)
-                        Speaker.speak(n.title + ".\n" + t)
-                    } else {
-                        status?.text = r.second
-                    }
-                }
             }
         }
     }
@@ -700,12 +637,8 @@ class NewsActivity : Activity() {
             Speaker.speak("هذا اختبار لقراءة الأخبار بالصوت والسرعة المختارين")
         }
         p.button("عرض آخر خطأ في تحميل الخبر") {
-            val e1 = NewsArticle.lastError
-            val e2 = NewsAi.lastError
-            var msg = ""
-            if (e1.isNotEmpty()) msg += "تحميل نص الخبر: " + e1 + "\n"
-            if (e2.isNotEmpty()) msg += "الذكاء الاصطناعي: " + e2
-            Ui.message(this, "آخر خطأ", if (msg.isEmpty()) "مفيش أخطاء" else msg)
+            val e = NewsArticle.lastError
+            Ui.message(this, "آخر خطأ في تحميل الخبر", if (e.isEmpty()) "مفيش أخطاء" else e)
         }
         p.button("مساعدة: شرح قارئ الأخبار") { showHelp() }
         p.bottomButton("رجوع") { backToTop() }
@@ -761,7 +694,7 @@ class NewsActivity : Activity() {
         p.section("جوه كل قسم")
         p.text("اختار التصنيف أو الجريدة. وبعدها: قراءة أول 10 عناوين، وإيقاف القراءة، وتحديث (العناوين بتتخزن 10 دقايق عشان تفتح بسرعة). دوس على أي عنوان عشان تفتح تفاصيل الخبر.", 18f)
         p.section("شاشة تفاصيل الخبر")
-        p.text("قراءة الخبر: بتقرا العنوان ونص الخبر (بيتحمل ويتترجم لو لازم). لو الجريدة منعت النص وفيه مفتاح Gemini، بيطلب التفاصيل بالذكاء الاصطناعي لوحده. قراءة العنوان فقط. إيقاف القراءة. زيادة وتقليل سرعة القراءة. تفاصيل أكتر بالذكاء الاصطناعي، واشرح الخبر بالذكاء الاصطناعي (الخلفية والسبب): ملخصات من نتائج بحث جوجل مش نص الجريدة. الخبر التالي والسابق. فتح الخبر في المتصفح، ونسخ العنوان ومشاركته.", 18f)
+        p.text("قراءة الخبر: بتقرا العنوان ونص الخبر (بيتحمل ويتترجم لو لازم). قراءة العنوان فقط. إيقاف القراءة. زيادة وتقليل سرعة القراءة. الخبر التالي والسابق. فتح الخبر في المتصفح، ونسخ العنوان ومشاركته.", 18f)
         p.section("ملاحظات")
         p.text("بعض الجرايد بتمنع قراءة الخبر كامل، فبتتقرا العناوين والملخص بس. تقدر تشوف السبب من الإعدادات، زر عرض آخر خطأ في تحميل الخبر. لو مفيش صوت عربي، اختار محرك نطق فيه عربي من الإعدادات.", 18f)
         p.bottomButton("رجوع") { backToTop() }
