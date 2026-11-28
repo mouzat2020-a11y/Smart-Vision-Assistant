@@ -25,8 +25,8 @@ class MainActivity : Activity() {
         Pair("translate", "ترجمة النص الموجود داخل صورة")
     )
 
-    // أيقونة لكل تبويب (الصور، المساعدات والكتابة، الصوت، الأخبار). تبويب الأخبار يستعير أيقونة مؤقتة
-    private val tabIcons = listOf(R.drawable.tab_images, R.drawable.tab_help, R.drawable.tab_audio, R.drawable.tab_help)
+    // أيقونة لكل تبويب (الصور، المساعدات والكتابة، الصوت، الأخبار)
+    private val tabIcons = listOf(R.drawable.tab_images, R.drawable.tab_help, R.drawable.tab_audio, R.drawable.tab_news)
 
     private val dailyTools = listOf(
         Pair("find", "ابحث عن شيء في المكان"),
@@ -116,8 +116,19 @@ class MainActivity : Activity() {
             page.section("الصوت")
             page.button("تحويل النص إلى صوت") { startActivity(Intent(this, TtsActivity::class.java)) }
         } else {
-            page.section("الأخبار")
-            page.button("قارئ الأخبار (آخر الأخبار حسب القسم والدولة)") { startActivity(Intent(this, NewsActivity::class.java)) }
+            page.section("الأخبار (" + (NewsData.NAMES[NewsData.activeCountry(this)] ?: "") + ")")
+            val secs = NewsSources.buildSections(NewsData.activeCountry(this))
+            for (k in secs.indices) {
+                page.button(secs[k].name) {
+                    startActivity(Intent(this, NewsActivity::class.java).putExtra("section", k))
+                }
+            }
+            page.button("إعدادات الأخبار") {
+                startActivity(Intent(this, NewsActivity::class.java).putExtra("screen", "settings"))
+            }
+            page.button("مساعدة: شرح قارئ الأخبار") {
+                startActivity(Intent(this, NewsActivity::class.java).putExtra("screen", "help"))
+            }
         }
     }
 
